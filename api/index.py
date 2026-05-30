@@ -62,8 +62,8 @@ def engine_analyze_intel(raw_web_context, target_company):
     
     user_content = f"Target Company: {target_company}\n\nWeb Scrape Context:\n{raw_web_context}"
     
-    payload = {
-        "model": "mistralai/Mistral-7B-Instruct-v0.2",
+        payload = {
+        "model": "nemotron-3-nano-omni-30b-a3b-reasoning", # 👈 Your free/cheap model ID goes here
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
