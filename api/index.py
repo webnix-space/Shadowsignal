@@ -22,6 +22,7 @@ except ImportError:
     print("Warning: psycopg2 missing. Memory bank will run in volatile mode.")
 
 # --- VERCEL ENVIRONMENT VARIABLES ---
+resend.api_key = os.getenv("RESEND_API_KEY")
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY")
 BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE")
 AIML_API_KEY = os.getenv("AIML_API_KEY")
@@ -81,6 +82,19 @@ def get_memory_logs():
 # --- 2. MULTI-AGENT COGNITIVE LAYER ---
 # --- UPDATE THESE AGENT FUNCTIONS IN api/index.py ---
 
+def send_automated_alert(target, threat_level, summary):
+    url = "https://api.resend.com/emails"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('RESEND_API_KEY')}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "from": "ShadowSignal AI <onboarding@resend.dev>",
+        "to": os.getenv("ALERT_EMAIL"),
+        "subject": f"CRITICAL THREAT DETECTED: {target}",
+        "html": f"<h1>Intelligence Alert</h1><p><b>Target:</b> {target}</p><p><b>Threat Level:</b> {threat_level}</p><p><b>Summary:</b> {summary}</p>"
+    }
+    requests.post(url, json=payload, headers=headers)
 def agent_aiml_sentiment(raw_web_context, target_company):
     if not AIML_API_KEY: return "THREAT: ERROR | AIML API Key missing."
     url = "https://api.aimlapi.com/v1/chat/completions"
@@ -276,9 +290,11 @@ def api_scrape():
 
 @app.route('/api/analyze', methods=['POST'])
 def api_analyze():
-    req_data = request.json
-    target = req_data.get('target', 'Microsoft')
-    raw_data = req_data.get('raw_data', '')
+    data = request.json
+    aiml = agent_aiml_sentiment(data['raw_data'], data['target'])
+    strat = agent_featherless_strategy(data['raw_data'], data['target'])
+    if "CRITICAL" in aiml: send_alert(data['target'], aiml, strat)
+    return jsonify({"aiml_sentiment": aiml, "featherless_strategy": strat})
     
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future_aiml = executor.submit(agent_aiml_sentiment, raw_data, target)
