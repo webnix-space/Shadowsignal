@@ -122,7 +122,7 @@ def agent_featherless_strategy(raw_web_context, target_company):
 
 # --- 3. PROFESSIONAL TERMINAL UI ---
 
-        DASHBOARD_HTML = """
+DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
