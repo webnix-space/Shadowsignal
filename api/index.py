@@ -34,46 +34,36 @@ def fetch_live_market_data(target_company):
     except Exception as e:
         return {"status": "success", "raw_data": fallback_text}
 
-from openai import OpenAI
-
 def engine_analyze_intel(raw_web_context, target_company):
-    """
-    Using the official AI/ML API base_url structure with OpenAI client
-    """
-    try:
-        # Initialize the OpenAI client targeting the AI/ML API gateway
-        client = OpenAI(
-            base_url="https://api.aimlapi.com/v1",
-            api_key=AIML_API_KEY,    
-        )
-        
-        system_prompt = (
-            "You are an expert corporate GTM strategy analyzer. Review the provided web context data "
-            "and draft exactly 1 specific, high-impact tactical sales counter-play warning for our revenue team."
-        )
-        
-        user_content = f"Target Company: {target_company}\n\nWeb Scrape Context:\n{raw_web_context}"
-        
-        # Call the completions endpoint using the explicit free model string
-        response = client.chat.completions.create(
-            model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", # 👈 Swap with "baidu/ernie-4-5-0-3b" if you want ERNIE
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.4
-        )
-        
-        return response.choices[0].message.content
-
-    except Exception as e:
-        return f"Inference engine failure via SDK: {str(e)}"
+    # This matches the base_url from your documentation script
+    url = "https://api.aimlapi.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {AIML_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    system_prompt = (
+        "You are an expert corporate GTM strategy analyzer. Review the provided web context data "
+        "and draft exactly 1 specific, high-impact tactical sales counter-play warning for our revenue team."
+    )
+    
+    user_content = f"Target Company: {target_company}\n\nWeb Scrape Context:\n{raw_web_context}"
+    
+    # Using the exact free model strings from your screenshots
+    payload = {
+        "model": "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", # 💡 Swap to "baidu/ernie-4-5-0-3b" if preferred
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content}
+        ],
+        "temperature": 0.4
+    }
     
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
+        res = requests.post(url, json=payload, headers=headers, timeout=12)
         if res.status_code == 200:
             return res.json()['choices'][0]['message']['content']
-        return f"AI Generation Error: Status code {res.status_code}. Response: {res.text}"
+        return f"AI Generation Error (Status {res.status_code}): {res.text}"
     except Exception as e:
         return f"Inference engine failure: {str(e)}"
 
