@@ -19,19 +19,26 @@ def fetch_live_market_data(target_company):
         "https": f"http://{BRIGHT_DATA_ZONE_USER}:{BRIGHT_DATA_ZONE_PASS}@brd.superproxy.io:33335"
     }
     
-    # DuckDuckGo HTML is much easier for datacenter proxies to read without triggering CAPTCHAs
-    search_url = f"https://html.duckduckgo.com/html/?q={target_company}+enterprise+pricing+news+competitors"
+    # Switched to Hacker News search API to bypass CAPTCHAs and get real deep-web tech pricing discussions
+    search_url = f"https://hn.algolia.com/api/v1/search?query={target_company}+pricing&hitsPerPage=15"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
     
     try:
         response = requests.get(search_url, proxies=proxies, headers=headers, timeout=10)
         
         if response.status_code == 200:
-            # Slices the first 2500 characters of the live HTML/text to send to the AI
-            clean_text = " ".join(response.text.split())[:2500]
+            data = response.json()
+            hits = data.get("hits", [])
+            
+            if not hits:
+                return {"status": "success", "raw_data": f"No recent deep web pricing leaks or discussions detected for {target_company}."}
+            
+            # Combine the titles and snippets of real forum discussions into a messy string for the AI
+            snippets = [f"{h.get('title', '')} {h.get('story_text', '')}" for h in hits]
+            clean_text = " | ".join(snippets)[:2500]
+            
             return {"status": "success", "raw_data": clean_text}
         else:
-            # WILL SHOW THE REAL ERROR IF BRIGHT DATA FAILS
             return {"status": "error", "raw_data": f"BrightData Proxy Blocked. Status: {response.status_code}"}
             
     except Exception as e:
