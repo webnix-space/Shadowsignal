@@ -1,14 +1,16 @@
-```python
+from flask import Flask, jsonify, request, render_template_string
+
+# 🚨 MOVE THIS TO THE VERY TOP so Vercel finds it immediately before anything can crash
+app = Flask(__name__)
+
 import os
 import json
 import requests
 import psycopg2
 import concurrent.futures
-from flask import Flask, jsonify, request, render_template_string
 from dotenv import load_dotenv
 
 load_dotenv()
-app = Flask(__name__)
 
 # --- VERCEL ENVIRONMENT VARIABLES ---
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY")
@@ -16,6 +18,8 @@ BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE")
 AIML_API_KEY = os.getenv("AIML_API_KEY")
 FEATHERLESS_API_KEY = os.getenv("FEATHERLESS_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# ... (Keep the rest of your database and API functions exactly the same below this)
 
 # --- 1. POSTGRESQL MEMORY CLUSTER ---
 def init_db():
