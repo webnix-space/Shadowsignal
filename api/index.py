@@ -52,18 +52,21 @@ def engine_analyze_intel(raw_web_context, target_company):
         "Content-Type": "application/json"
     }
     
+    # 🚨 UPDATED PROMPT: Forcing simple strings and banning markdown
     system_prompt = (
         "You are an elite enterprise GTM strategy AI. Analyze the raw web data provided. "
-        "Return a structured strategic assessment identifying competitor weaknesses and sales counter-plays. "
-        "Format your entire response STRICTLY as a JSON object with these exact keys: "
-        "\"executive_summary\", \"pricing_vulnerabilities\", \"recommended_sales_play\"."
+        "Return a structured strategic assessment. "
+        "Format your entire response STRICTLY as a raw JSON object with EXACTLY these three keys: "
+        "\"executive_summary\", \"pricing_vulnerabilities\", and \"recommended_sales_play\". "
+        "CRITICAL: The value for each key MUST be a single, detailed plain-text paragraph (string). Do not use nested arrays or objects. "
+        "Do NOT wrap the output in ```json or markdown blocks. Return only the raw JSON."
     )
     
     user_content = f"Target Company: {target_company}\n\nWeb Scrape Data:\n{raw_web_context}"
     
     payload = {
-        "model": "deepseek-ai/DeepSeek-V3.2",  # Exactly matching your script
-        "max_tokens": 4096,                    # Ensuring the JSON doesn't get cut off
+        "model": "deepseek-ai/DeepSeek-V3.2", 
+        "max_tokens": 4096,                    
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
@@ -74,20 +77,26 @@ def engine_analyze_intel(raw_web_context, target_company):
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=30)
         
-        # Check if the response is valid from Featherless
         if res.status_code in [200, 201]:
             try:
-                # Test if response parses correctly
-                response_json = res.json()
-                return response_json['choices'][0]['message']['content']
+                content = res.json()['choices'][0]['message']['content'].strip()
+                
+                # 🚨 NEW: Rip out markdown blocks if the AI disobeys
+                if content.startswith("```json"):
+                    content = content[7:]
+                elif content.startswith("```"):
+                    content = content[3:]
+                if content.endswith("```"):
+                    content = content[:-3]
+                    
+                return content.strip()
             except ValueError:
                 return json.dumps({
                     "executive_summary": "Parsing Error",
-                    "pricing_vulnerabilities": "Failed to read DeepSeek's response as JSON.",
+                    "pricing_vulnerabilities": "Failed to read DeepSeek's response.",
                     "recommended_sales_play": "Check backend formatting."
                 })
         else:
-            # Safely capture API errors (like 401 Unauthorized or 404 Not Found)
             return json.dumps({
                 "executive_summary": f"Featherless API Error (Status {res.status_code})",
                 "pricing_vulnerabilities": "Authorization or endpoint validation failure.",
