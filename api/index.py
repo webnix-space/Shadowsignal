@@ -53,31 +53,53 @@ def engine_analyze_intel(raw_web_context, target_company):
     }
     
     system_prompt = (
-        "You are an elite enterprise GTM strategy AI. Analyze the extensive raw web data provided. "
+        "You are an elite enterprise GTM strategy AI. Analyze the raw web data provided. "
         "Return a structured strategic assessment identifying competitor weaknesses and sales counter-plays. "
         "Format your entire response STRICTLY as a JSON object with these exact keys: "
         "\"executive_summary\", \"pricing_vulnerabilities\", \"recommended_sales_play\"."
     )
     
-    user_content = f"Target Company: {target_company}\n\nMassive Web Scrape Data:\n{raw_web_context}"
+    user_content = f"Target Company: {target_company}\n\nWeb Scrape Data:\n{raw_web_context}"
     
     payload = {
-        "model": "deepseek-ai/DeepSeek-V3", 
+        "model": "deepseek-ai/DeepSeek-V3.2",  # Exactly matching your script
+        "max_tokens": 4096,                    # Ensuring the JSON doesn't get cut off
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content}
         ],
-        "temperature": 0.2,
-        "response_format": {"type": "json_object"}
+        "temperature": 0.2
     }
     
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=25)
+        res = requests.post(url, json=payload, headers=headers, timeout=30)
+        
+        # Check if the response is valid from Featherless
         if res.status_code in [200, 201]:
-            return res.json()['choices'][0]['message']['content']
-        return f'{{"error": "Featherless API Error (Status {res.status_code}): {res.text}"}}'
+            try:
+                # Test if response parses correctly
+                response_json = res.json()
+                return response_json['choices'][0]['message']['content']
+            except ValueError:
+                return json.dumps({
+                    "executive_summary": "Parsing Error",
+                    "pricing_vulnerabilities": "Failed to read DeepSeek's response as JSON.",
+                    "recommended_sales_play": "Check backend formatting."
+                })
+        else:
+            # Safely capture API errors (like 401 Unauthorized or 404 Not Found)
+            return json.dumps({
+                "executive_summary": f"Featherless API Error (Status {res.status_code})",
+                "pricing_vulnerabilities": "Authorization or endpoint validation failure.",
+                "recommended_sales_play": f"Response text: {res.text[:200]}"
+            })
+            
     except Exception as e:
-        return f'{{"error": "Featherless Engine Connection Failed: {str(e)}"}}'
+        return json.dumps({
+            "executive_summary": "Connection timeout.",
+            "pricing_vulnerabilities": "Could not reach Featherless AI within the allocated time.",
+            "recommended_sales_play": f"Error context: {str(e)}"
+        })
 
 # --- ENTERPRISE FRONTEND UI ---
 DASHBOARD_HTML = """
