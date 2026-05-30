@@ -369,30 +369,39 @@ def main_dashboard(path):
 @app.route('/api/scrape', methods=['GET'])
 def api_scrape():
     target = request.args.get('target', 'Microsoft')
-    if not BRIGHT_DATA_API_KEY or not BRIGHT_DATA_ZONE:
-        return jsonify({"error": "Bright Data API Key missing in Vercel."})
+    if not BRIGHT_DATA_API_KEY:
+        return jsonify({"error": "Bright Data API Key missing."})
     
-    url = "[https://api.brightdata.com/request](https://api.brightdata.com/request)"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {BRIGHT_DATA_API_KEY.strip()}"}
+    # Use the direct API URL without manual proxy dictionaries
+    url = "https://api.brightdata.com/request"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {BRIGHT_DATA_API_KEY.strip()}"
+    }
+    
     payload = {
         "zone": BRIGHT_DATA_ZONE.strip(),
-        "url": f"[https://www.google.com/search?q=](https://www.google.com/search?q=){target}+enterprise+pricing+competitive+strategy+changes&hl=en&gl=us",
-        "format": "raw", "data_format": "parsed_light"
+        "url": f"https://www.google.com/search?q={target}+enterprise+pricing+competitive+strategy+changes&hl=en&gl=us",
+        "format": "raw",
+        "data_format": "parsed_light"
     }
     
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=20)
+        # Pass the payload as JSON, no proxy argument needed for the SERP API
+        res = requests.post(url, json=payload, headers=headers, timeout=30)
         if res.status_code == 200:
             data = res.json()
-            organic = data.get("organic", [])
-            if not organic: return jsonify({"error": "No organic search results found."})
+            # If the response is a list, it might be the top 10 results directly
+            organic = data.get("organic", []) if isinstance(data, dict) else data
+            
+            if not organic: return jsonify({"error": "No organic results found."})
             
             snippets = [f"Title: {r.get('title')}\nLink: {r.get('link')}\nDescription: {r.get('description')}" for r in organic]
             raw_text = "\n\n".join(snippets)[:15000]
             return jsonify({"status": "success", "raw_data": raw_text, "bytes": len(raw_text)})
-        return jsonify({"error": f"Bright Data SERP Error: {res.status_code}"})
+        return jsonify({"error": f"Bright Data SERP Error: {res.status_code} - {res.text}"})
     except Exception as e:
-        return jsonify({"error": f"Bright Data Timeout: {str(e)}"})
+        return jsonify({"error": f"Bright Data Connection Error: {str(e)}"})
 
 @app.route('/api/analyze', methods=['POST'])
 def api_analyze():
