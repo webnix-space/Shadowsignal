@@ -332,15 +332,21 @@ DASHBOARD_HTML = """
                 `;
 
                 try {
-                    const strategy = JSON.parse(output.featherless_strategy);
-                    if (strategy.error) throw new Error(strategy.error);
-                    
-                    document.getElementById('summaryText').innerText = strategy.executive_summary || "No data.";
-                    document.getElementById('pricingText').innerText = strategy.pricing_vulnerabilities || "No data.";
-                    document.getElementById('playText').innerText = strategy.recommended_sales_play || "No data.";
-                } catch(e) {
-                    document.getElementById('summaryText').innerText = "Parser Error: " + output.featherless_strategy;
-                }
+                    // Replace the try-catch block inside your <script> with this:
+try {
+    const strategy = JSON.parse(output.featherless_strategy);
+    if (strategy.error) throw new Error(strategy.error);
+    
+    document.getElementById('summaryText').innerText = strategy.executive_summary || "No data.";
+    document.getElementById('pricingText').innerText = strategy.pricing_vulnerabilities || "No data.";
+    
+    // FIX: Ensure this is a string, not an object
+    const play = strategy.recommended_sales_play;
+    document.getElementById('playText').innerText = (typeof play === 'object') ? JSON.stringify(play) : play;
+    
+} catch(e) {
+    document.getElementById('summaryText').innerText = "Parser Error: " + output.featherless_strategy;
+}
                 
                 logTerminal(`Saving intelligence run to PostgreSQL database...`);
                 setTimeout(refreshHistoryList, 1500); 
