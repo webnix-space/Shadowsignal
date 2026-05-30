@@ -34,28 +34,40 @@ def fetch_live_market_data(target_company):
     except Exception as e:
         return {"status": "success", "raw_data": fallback_text}
 
+from openai import OpenAI
+
 def engine_analyze_intel(raw_web_context, target_company):
-    url = "https://api.aimlapi.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {AIML_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    system_prompt = (
-        "You are an expert corporate GTM strategy analyzer. Review the provided web context data "
-        "and draft exactly 1 specific, high-impact tactical sales counter-play warning for our revenue team."
-    )
-    
-    user_content = f"Target Company: {target_company}\n\nWeb Scrape Context:\n{raw_web_context}"
-    
-    payload = {
-        "model": "meta-llama/llama-3-8b-instruct",  # 👈 Switched to your 100% free model choice
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
-        ],
-        "temperature": 0.5
-    }
+    """
+    Using the official AI/ML API base_url structure with OpenAI client
+    """
+    try:
+        # Initialize the OpenAI client targeting the AI/ML API gateway
+        client = OpenAI(
+            base_url="https://api.aimlapi.com/v1",
+            api_key=AIML_API_KEY,    
+        )
+        
+        system_prompt = (
+            "You are an expert corporate GTM strategy analyzer. Review the provided web context data "
+            "and draft exactly 1 specific, high-impact tactical sales counter-play warning for our revenue team."
+        )
+        
+        user_content = f"Target Company: {target_company}\n\nWeb Scrape Context:\n{raw_web_context}"
+        
+        # Call the completions endpoint using the explicit free model string
+        response = client.chat.completions.create(
+            model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning", # 👈 Swap with "baidu/ernie-4-5-0-3b" if you want ERNIE
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.4
+        )
+        
+        return response.choices[0].message.content
+
+    except Exception as e:
+        return f"Inference engine failure via SDK: {str(e)}"
     
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
