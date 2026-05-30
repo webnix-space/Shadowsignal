@@ -1,6 +1,6 @@
-from flask import Flask, jsonify, request, render_template_string
+```python
+from flask import Flask, jsonify, request
 
-# 🚨 MOVE THIS TO THE VERY TOP so Vercel finds it immediately before anything can crash
 app = Flask(__name__)
 
 import os
@@ -18,8 +18,6 @@ BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE")
 AIML_API_KEY = os.getenv("AIML_API_KEY")
 FEATHERLESS_API_KEY = os.getenv("FEATHERLESS_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
-
-# ... (Keep the rest of your database and API functions exactly the same below this)
 
 # --- 1. POSTGRESQL MEMORY CLUSTER ---
 def init_db():
@@ -59,7 +57,7 @@ def save_to_memory(target, threat, summary):
 
 def get_memory_logs():
     if not DATABASE_URL: 
-        return [{"company": "System Alert", "time": "Now", "snippet": "PostgreSQL DATABASE_URL not set in Vercel. Memory offline."}]
+        return [{"company": "System Alert", "time": "Now", "snippet": "PostgreSQL offline."}]
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
@@ -70,7 +68,6 @@ def get_memory_logs():
         return [{"company": l[0], "time": l[1].strftime("%H:%M %b %d"), "snippet": l[2][:50]} for l in logs]
     except Exception as e:
         return [{"company": "DB Error", "time": "Now", "snippet": str(e)[:50]}]
-
 
 # --- 2. MULTI-AGENT COGNITIVE LAYER ---
 def agent_aiml_sentiment(raw_web_context, target_company):
