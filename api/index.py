@@ -22,8 +22,8 @@ def fetch_live_market_data(target_company):
     
     # Configure the Bright Data proxy endpoint directly
     proxies = {
-        "http": f"http://{BRIGHT_DATA_ZONE_USER}:{BRIGHT_DATA_ZONE_PASS}@brd.superproxy.io:22225",
-        "https": f"http://{BRIGHT_DATA_ZONE_USER}:{BRIGHT_DATA_ZONE_PASS}@brd.superproxy.io:22225"
+        "http": f"http://{BRIGHT_DATA_ZONE_USER}:{BRIGHT_DATA_ZONE_PASS}@brd.superproxy.io:33335",
+        "https": f"http://{BRIGHT_DATA_ZONE_USER}:{BRIGHT_DATA_ZONE_PASS}@brd.superproxy.io:33335"
     }
     
     # Search target to aggregate external signals
