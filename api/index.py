@@ -120,107 +120,116 @@ def agent_featherless_strategy(raw_web_context, target_company):
         return f'{{"error": "Featherless Error {res.status_code}"}}'
     except: return '{"error": "Featherless timeout. The model is busy."}'
 
-# --- 3. THE LIVE TERMINAL UI ---
+# --- 3. PROFESSIONAL TERMINAL UI ---
 
-     # --- 3. PROFESSIONAL TERMINAL UI ---
-DASHBOARD_HTML = """
+        DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ShadowSignal | Enterprise Intelligence</title>
+    <title>ShadowSignal | Enterprise Intel</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600&display=swap" rel="stylesheet">
     <style>
-        body { background: #050505; color: #e5e7eb; font-family: 'Inter', system-ui, sans-serif; }
-        .glass { background: rgba(17, 24, 39, 0.7); backdrop-filter: blur(10px); border: 1px solid #1f2937; }
-        .terminal { font-family: 'Monaco', 'Consolas', monospace; }
-        .glow { box-shadow: 0 0 15px rgba(59, 130, 246, 0.2); }
+        body { background: #050505; color: #a1a1aa; font-family: 'Inter', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        .glass { background: rgba(10, 10, 10, 0.8); border: 1px solid #1f2937; backdrop-filter: blur(12px); }
+        .gradient-text { background: linear-gradient(90deg, #3b82f6, #8b5cf6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
     </style>
 </head>
-<body class="min-h-screen p-4 md:p-8">
-    <div class="max-w-4xl mx-auto space-y-6">
-        <div class="flex justify-between items-center border-b border-gray-800 pb-4">
+<body class="p-4 md:p-10">
+    <div class="max-w-5xl mx-auto space-y-6">
+        <div class="flex justify-between items-end border-b border-gray-800 pb-6">
             <div>
-                <h1 class="text-xl font-bold text-white tracking-tighter">SHADOWSIGNAL<span class="text-blue-500">.AI</span></h1>
-                <p class="text-[10px] text-gray-500 uppercase tracking-widest">Enterprise Intelligence Command</p>
+                <h1 class="text-3xl font-bold text-white tracking-tighter">SHADOWSIGNAL<span class="text-blue-500">.AI</span></h1>
+                <p class="text-xs text-gray-500 uppercase tracking-widest mt-1">Strategic GTM Intelligence Core</p>
             </div>
-            <div id="statusBadge" class="px-3 py-1 bg-green-900/20 text-green-400 text-[10px] border border-green-900 rounded-full">SYSTEM READY</div>
+            <div class="text-right">
+                <div id="status" class="text-emerald-500 text-[10px] font-bold uppercase border border-emerald-900 bg-emerald-900/10 px-3 py-1 rounded-full">System Ready</div>
+            </div>
         </div>
 
-        <div class="glass p-4 rounded-xl flex gap-4">
-            <input id="targetCompany" type="text" value="Microsoft" class="flex-1 bg-transparent border-none outline-none text-sm placeholder-gray-600" placeholder="Enter target competitor...">
-            <button onclick="executeOrchestration()" id="actionButton" class="bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold px-6 py-2 rounded-lg transition-all">EXECUTE</button>
+        <div class="glass p-6 rounded-2xl flex flex-col md:flex-row gap-4">
+            <input id="targetCompany" type="text" value="Microsoft" class="flex-1 bg-transparent border-b border-gray-700 outline-none text-white p-2 placeholder-gray-600 focus:border-blue-500 transition-colors">
+            <button onclick="executeOrchestration()" id="actionButton" class="bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs px-8 py-3 rounded-xl transition-all">EXECUTE ANALYSIS</button>
         </div>
 
-        <div id="liveTerminal" class="hidden glass p-4 rounded-xl">
-            <div id="terminalStream" class="terminal text-[11px] text-gray-400 space-y-1 h-32 overflow-y-auto"></div>
-        </div>
-
-        <div id="outputDashboard" class="hidden grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div class="md:col-span-2 p-4 rounded-lg bg-gray-900/50 border border-gray-800">
-                <div id="threatLevel" class="text-[10px] font-bold uppercase tracking-widest text-gray-400">Threat Level: Pending...</div>
+        <div id="workspace" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div class="lg:col-span-12 glass p-4 rounded-xl">
+                <div id="terminal" class="font-mono text-[10px] text-gray-400 h-24 overflow-y-auto space-y-1"></div>
             </div>
-            <div class="p-4 rounded-lg bg-gray-900/30 border border-gray-800">
-                <h4 class="text-[9px] font-bold text-blue-500 uppercase mb-2">Executive Summary</h4>
-                <p id="summaryText" class="text-xs text-gray-300"></p>
-            </div>
-            <div class="p-4 rounded-lg bg-gray-900/30 border border-gray-800">
-                <h4 class="text-[9px] font-bold text-red-500 uppercase mb-2">Vulnerabilities</h4>
-                <p id="pricingText" class="text-xs text-gray-300"></p>
-            </div>
-            <div class="md:col-span-2 p-4 rounded-lg bg-blue-900/5 border border-blue-900/30">
-                <h4 class="text-[9px] font-bold text-green-500 uppercase mb-2">Counter-Play Strategy</h4>
-                <p id="playText" class="text-xs text-gray-300"></p>
+            
+            <div id="dashboard" class="hidden lg:col-span-12 grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div class="glass p-6 rounded-2xl col-span-3 border-l-4 border-blue-500">
+                    <div id="threatLevel" class="text-[9px] font-bold text-blue-500 uppercase mb-2">Assessment</div>
+                    <p id="summaryText" class="text-sm text-gray-300"></p>
+                </div>
+                <div class="glass p-6 rounded-2xl border-t border-red-500/30">
+                    <h4 class="text-[9px] font-bold text-red-500 uppercase mb-3">Vulnerabilities</h4>
+                    <p id="pricingText" class="text-xs leading-relaxed"></p>
+                </div>
+                <div class="glass p-6 rounded-2xl col-span-2 border-t border-emerald-500/30">
+                    <div class="flex justify-between items-start mb-3">
+                        <h4 class="text-[9px] font-bold text-emerald-500 uppercase">Counter-Play Strategy</h4>
+                        <button onclick="downloadReport()" class="text-[9px] text-blue-400 hover:text-blue-300 underline">DOWNLOAD REPORT</button>
+                    </div>
+                    <pre id="playText" class="text-xs text-gray-400 font-mono whitespace-pre-wrap"></pre>
+                </div>
             </div>
         </div>
     </div>
 
     <script>
+        let currentReport = null;
+
         function log(msg) {
-            const s = document.getElementById('terminalStream');
-            s.innerHTML += `<div><span class="text-blue-500">></span> ${msg}</div>`;
-            s.scrollTop = s.scrollHeight;
+            const t = document.getElementById('terminal');
+            t.innerHTML += `<div><span class="text-blue-600">▲</span> ${msg}</div>`;
+            t.scrollTop = t.scrollHeight;
+        }
+
+        function downloadReport() {
+            if(!currentReport) return;
+            const blob = new Blob([JSON.stringify(currentReport, null, 2)], {type: 'application/json'});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'ShadowSignal_Report.json';
+            a.click();
         }
 
         async function executeOrchestration() {
-            const btn = document.getElementById('actionButton');
             const target = document.getElementById('targetCompany').value;
-            const term = document.getElementById('liveTerminal');
-            const dash = document.getElementById('outputDashboard');
+            document.getElementById('workspace').classList.remove('hidden');
+            document.getElementById('dashboard').classList.add('hidden');
+            document.getElementById('terminal').innerHTML = '';
             
-            btn.disabled = true;
-            btn.innerText = "PROCESSING...";
-            term.classList.remove('hidden');
-            dash.classList.add('hidden');
-            document.getElementById('terminalStream').innerHTML = '';
-
-            log("Establishing secure connection...");
+            log("Initializing proxy tunnel...");
             const scrape = await fetch('/api/scrape?target=' + encodeURIComponent(target)).then(r => r.json());
-            if(scrape.error) return log("ERROR: " + scrape.error, true);
+            if(scrape.error) return log("FAILURE: " + scrape.error);
             
-            log("Ingesting raw intelligence...");
+            log("Parsing SERP data (" + scrape.bytes + " bytes)...");
+            log("Executing dual-agent inference...");
+            
             const ai = await fetch('/api/analyze', { method: 'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({target, raw_data: scrape.raw_data}) }).then(r => r.json());
             
-            log("Finalizing strategic synthesis.");
-            dash.classList.remove('hidden');
+            currentReport = ai;
+            document.getElementById('dashboard').classList.remove('hidden');
             document.getElementById('threatLevel').innerText = "Assessment: " + ai.aiml_sentiment;
             
             try {
                 const data = JSON.parse(ai.featherless_strategy.replace(/```json|```/g, ''));
-                document.getElementById('summaryText').innerText = data.executive_summary || "N/A";
-                document.getElementById('pricingText').innerText = data.pricing_vulnerabilities || "N/A";
-                document.getElementById('playText').innerText = (typeof data.recommended_sales_play === 'object') ? JSON.stringify(data.recommended_sales_play) : data.recommended_sales_play;
-            } catch(e) { document.getElementById('summaryText').innerText = "Parse Error: Could not render strategy."; }
-            
-            btn.disabled = false;
-            btn.innerText = "EXECUTE";
+                document.getElementById('summaryText').innerText = data.executive_summary;
+                document.getElementById('pricingText').innerText = data.pricing_vulnerabilities;
+                document.getElementById('playText').innerText = typeof data.recommended_sales_play === 'object' ? JSON.stringify(data.recommended_sales_play, null, 2) : data.recommended_sales_play;
+            } catch(e) { log("Data parsing error occurred."); }
         }
     </script>
 </body>
 </html>
 """
-                                
+                              
 # --- 4. FLASK ROUTING & API ENDPOINTS ---
 
 @app.route('/', defaults={'path': ''})
