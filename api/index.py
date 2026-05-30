@@ -79,9 +79,11 @@ def get_memory_logs():
         return [{"company": "DB Error", "time": "Now", "snippet": str(e)[:50]}]
 
 # --- 2. MULTI-AGENT COGNITIVE LAYER ---
+# --- UPDATE THESE AGENT FUNCTIONS IN api/index.py ---
+
 def agent_aiml_sentiment(raw_web_context, target_company):
     if not AIML_API_KEY: return "THREAT: ERROR | AIML API Key missing."
-    url = "[https://api.aimlapi.com/v1/chat/completions](https://api.aimlapi.com/v1/chat/completions)"
+    url = "https://api.aimlapi.com/v1/chat/completions"
     headers = {"Authorization": f"Bearer {AIML_API_KEY.strip()}", "Content-Type": "application/json"}
     prompt = "Evaluate the data. Output ONLY a single line: [THREAT LEVEL] | [10-word summary]. Threat Level must be CRITICAL, ELEVATED, or LOW."
     
@@ -91,34 +93,32 @@ def agent_aiml_sentiment(raw_web_context, target_company):
         "temperature": 0.3
     }
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=15)
+        # INCREASED TIMEOUT to 60s
+        res = requests.post(url, json=payload, headers=headers, timeout=60)
         if res.status_code == 200: return res.json()['choices'][0]['message']['content'].strip()
-        return "THREAT: UNKNOWN | AI/ML API unavailable."
+        return f"THREAT: UNKNOWN | AI/ML Error {res.status_code}"
     except: return "THREAT: UNKNOWN | Connection timeout."
 
 def agent_featherless_strategy(raw_web_context, target_company):
     if not FEATHERLESS_API_KEY: return '{"error": "Featherless API Key missing."}'
-    url = "[https://api.featherless.ai/v1/chat/completions](https://api.featherless.ai/v1/chat/completions)"
+    url = "https://api.featherless.ai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {FEATHERLESS_API_KEY.strip()}", "Content-Type": "application/json"}
-    prompt = (
-        "You are an elite enterprise GTM AI. Analyze the Google search data. "
-        "Format response STRICTLY as raw JSON with keys: \"executive_summary\", \"pricing_vulnerabilities\", \"recommended_sales_play\". "
-        "Values must be single plain-text paragraphs. NO Markdown."
-    )
     payload = {
         "model": "deepseek-ai/DeepSeek-V3.2", "max_tokens": 4096, "temperature": 0.2,
-        "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": f"Target: {target_company}\nData:\n{raw_web_context}"}]
+        "messages": [
+            {"role": "system", "content": "You are an elite enterprise GTM AI. Return raw JSON with keys: \"executive_summary\", \"pricing_vulnerabilities\", \"recommended_sales_play\"."},
+            {"role": "user", "content": f"Target: {target_company}\nData:\n{raw_web_context}"}
+        ]
     }
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=35)
+        # INCREASED TIMEOUT to 90s
+        res = requests.post(url, json=payload, headers=headers, timeout=90)
         if res.status_code == 200:
             content = res.json()['choices'][0]['message']['content'].strip()
-            # FIXED: Safe copy-paste string replacement
             content = content.replace("```json", "").replace("```", "").strip()
             return content
-        return f'{{"error": "Featherless API Error {res.status_code}"}}'
-    except: return '{"error": "Featherless timeout."}'
-
+        return f'{{"error": "Featherless Error {res.status_code}"}}'
+    except: return '{"error": "Featherless timeout. The model is busy."}'
 
 # --- 3. THE LIVE TERMINAL UI ---
 DASHBOARD_HTML = """
