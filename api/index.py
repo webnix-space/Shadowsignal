@@ -1,11 +1,10 @@
-from flask import Flask
-app = Flask(__name__)
-
-from flask import jsonify, request, render_template_string
+from flask import Flask, jsonify, request, render_template_string
 import os, json, requests, time
 from datetime import datetime
 from io import BytesIO
 import uuid
+
+app = Flask(__name__)
 
 BAND_API_KEY = os.getenv("BAND_API_KEY", "").strip()
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "").strip()
