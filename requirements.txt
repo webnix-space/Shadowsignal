@@ -1,5 +1,90 @@
-flask
-requests
-python-dotenv
-psycopg2-binary
-resend
+# ShadowSignal - Band of Agents Hackathon
+# Multi-Agent Competitive Intelligence System
+# Python 3.11+ recommended
+
+# ============================================================
+# CORE FRAMEWORK
+# ============================================================
+Flask==3.0.3
+Werkzeug==3.0.3
+
+# ============================================================
+# BAND SDK (Official Hackathon Platform)
+# Install from official source - check hackathon docs for latest
+# band-sdk>=2.0.0
+# NOTE: If band-sdk is not yet on PyPI, install from:
+# pip install git+https://github.com/band-ai/band-sdk.git
+# Or use the native BandRoom implementation in index.py as fallback
+
+# ============================================================
+# CODEBAND (Coding Agent Orchestration)
+# Install from official source
+# codeband>=1.0.0
+# NOTE: If codeband is not yet on PyPI, the artifact generation
+# in index.py uses native matplotlib/python-pptx as fallback
+
+# ============================================================
+# HTTP CLIENT
+# ============================================================
+requests==2.32.3
+urllib3==2.2.2
+
+# ============================================================
+# AI/ML API PARTNER (NVIDIA Nemotron, GPT-4, Claude)
+# https://aimlapi.com
+# Uses native requests (no SDK required)
+# API Key: AIML_API_KEY
+
+# ============================================================
+# FEATHERLESS AI PARTNER (Open-Source Model Inference)
+# https://featherless.ai
+# Uses native requests (no SDK required)
+# API Key: FEATHERLESS_API_KEY
+
+# ============================================================
+# BRIGHT DATA (Web Scraping - Optional)
+# https://brightdata.com
+# Uses native requests (no SDK required)
+# API Key: BRIGHT_DATA_API_KEY
+# Zone: BRIGHT_DATA_ZONE
+
+# ============================================================
+# ARTIFACT GENERATION (Codeband Fallback)
+# ============================================================
+matplotlib==3.9.0
+numpy==1.26.4
+python-pptx==0.6.23
+
+# ============================================================
+# DATA PROCESSING
+# ============================================================
+pandas==2.2.2
+
+# ============================================================
+# STREAMLIT (For ROI Calculator App)
+# ============================================================
+streamlit==1.35.0
+plotly==5.22.0
+
+# ============================================================
+# UTILITIES
+# ============================================================
+python-dotenv==1.0.1
+uuid==1.30
+
+# ============================================================
+# DEPLOYMENT
+# ============================================================
+# Vercel (Current)
+# Uses vercel.json config - no additional packages needed
+
+# Render (Alternative)
+# gunicorn==22.0.0
+
+# ============================================================
+# DEVELOPMENT (Optional)
+# ============================================================
+# pytest==8.2.2
+# black==24.4.2
+# flake8==7.1.0
+
