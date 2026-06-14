@@ -1,8 +1,7 @@
 from flask import Flask, jsonify, request, render_template_string
-import os, json, requests, time
-from datetime import datetime
 from io import BytesIO
-import uuid
+from datetime import datetime
+import os, json, requests, time, uuid
 
 app = Flask(__name__)
 
