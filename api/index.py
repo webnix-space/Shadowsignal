@@ -17,7 +17,6 @@ app = Flask(__name__)
 
 # --- ENVIRONMENT CONFIGURATION ---
 BAND_API_KEY = os.getenv("BAND_API_KEY", "").strip()
-BAND_PRO_TOKEN = os.getenv("BAND_PRO_TOKEN", "").strip()
 BRIGHT_DATA_API_KEY = os.getenv("BRIGHT_DATA_API_KEY", "").strip()
 BRIGHT_DATA_ZONE = os.getenv("BRIGHT_DATA_ZONE", "").strip()
 AIML_API_KEY = os.getenv("AIML_API_KEY", "").strip()
