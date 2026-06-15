@@ -1,5 +1,4 @@
 band-sdk[langgraph]
-thenvoi
 langchain-openai
 langgraph
 python-dotenv>=1.0.1
