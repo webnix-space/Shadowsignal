@@ -1,4 +1,4 @@
-thenvoi
+git+https://github.com/band-ai/sdk-python.git
 python-dotenv>=1.0.1
 requests>=2.32.3
 flask>=3.0.3
