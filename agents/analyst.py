@@ -1,76 +1,58 @@
-
-"""
-ShadowSignal - GTM Analyst Agent
-Provider: AIML API (nvidia/nemotron-3-nano-omni-30b-a3b-reasoning)
-Runs as persistent WebSocket process on Railway.
-"""
-import asyncio
+"""ShadowSignal — GTM Analyst Agent (AIML API / Nemotron)"""
 import logging
 import os
 from dotenv import load_dotenv
-from thenvoi import Agent
-from aiml_adapter import AIMLApiAdapter
+from base_agent import BasePollingAgent, AIML_BASE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [ANALYST] %(message)s")
-logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the GTM Analyst Agent in ShadowSignal — an enterprise competitive intelligence system.
+SYSTEM_PROMPT = """You are the GTM Analyst Agent in ShadowSignal — an enterprise competitive intelligence system running inside a Band collaboration room.
 
 YOUR JOB:
-- Receive raw intel from @InvestigatorAgent and produce structured GTM analysis
-- Score competitive threats, identify trends, recommend actions
+When @AnalystAgent is mentioned or Investigator drops intel, produce structured GTM analysis.
 
-BAND ROOM BEHAVIOR:
-- Start every message with [ANALYST]
-- When @InvestigatorAgent drops intel, respond with structured analysis:
+OUTPUT FORMAT:
+Start every message with [ANALYST]
 
-  IMPACT SCORE: X/100
-  TREND: up/down/stable
-  THREAT LEVEL: low/medium/high/critical
-  CONFIDENCE: X%
+IMPACT SCORE: X/100
+TREND: up/down/stable
+THREAT LEVEL: low/medium/high/critical
+CONFIDENCE: X%
 
-  KEY FINDINGS:
-  - Finding 1 (with specific numbers)
-  - Finding 2
-  - Finding 3
+KEY FINDINGS:
+- Finding with specific data point
+- Finding with specific data point
+- Finding with specific data point
 
-  RECOMMENDED ACTIONS:
-  - Action 1 (with timeline)
-  - Action 2
+RECOMMENDED ACTIONS:
+- Action with timeline
+- Action with timeline
 
-- After analysis, tag @StrategistAgent:
-  "[ANALYST] Analysis complete. Threat level: [LEVEL]. @StrategistAgent please generate counter-plays."
-- If intel is insufficient, tag @InvestigatorAgent with specific gaps
+End with: "@StrategistAgent analysis complete — please generate counter-play strategies"
 
-Be analytical, precise. Executives act on your numbers.
+If intel is insufficient, ask: "@InvestigatorAgent need more data on [specific gap]"
 """
 
-async def main():
+def main():
     load_dotenv()
-    agent_id = os.getenv("ANALYST_AGENT_ID")
     api_key = os.getenv("ANALYST_API_KEY")
     aiml_key = os.getenv("AIML_API_KEY")
+    room_id = os.getenv("BAND_ROOM_ID")
 
-    if not agent_id or not api_key:
-        logger.error("Missing ANALYST_AGENT_ID or ANALYST_API_KEY"); return
-    if not aiml_key:
-        logger.error("Missing AIML_API_KEY"); return
+    if not api_key or not aiml_key or not room_id:
+        logging.error("Missing ANALYST_API_KEY, AIML_API_KEY, or BAND_ROOM_ID")
+        return
 
-    adapter = AIMLApiAdapter(
-        api_key=aiml_key,
-        model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    agent = BasePollingAgent(
+        name="ShadowSignal Analyst",
+        agent_api_key=api_key,
         system_prompt=SYSTEM_PROMPT,
-        max_tokens=4096,
+        llm_api_key=aiml_key,
+        llm_model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        llm_base_url=AIML_BASE,
+        room_id=room_id,
     )
-    agent = Agent.create(
-        adapter=adapter,
-        agent_id=agent_id,
-        api_key=api_key,
-        ws_url=os.getenv("THENVOI_WS_URL", "wss://app.band.ai/api/v1/socket/websocket"),
-        rest_url=os.getenv("THENVOI_REST_URL", "https://app.band.ai/"),
-    )
-    logger.info("GTM Analyst Agent online — AIML API (Nemotron)")
-    await agent.run()
+    agent.run()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
