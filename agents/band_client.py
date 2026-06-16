@@ -5,15 +5,14 @@ from typing import Optional, Dict, Any, List
 
 class BandClient:
     """
-    Resilient Band.ai REST API client.
-    Preserves original API while adding error handling and retry logic.
+    FIXED: Uses X-API-Key header for Band.ai authentication.
     """
 
     def __init__(self, api_key: str, base_url: str = "https://app.band.ai/api/v1"):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.headers = {
-            "Authorization": f"Bearer {api_key}",
+            "X-API-Key": api_key,
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
