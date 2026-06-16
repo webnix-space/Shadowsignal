@@ -1,6 +1,10 @@
 """
-Base polling agent — polls Band REST API for messages, processes them with an LLM,
-sends reply back to the room. No WebSocket, no SDK required.
+Base polling agent using Band REST API directly.
+Key facts from docs:
+- Auth: X-API-Key header
+- Messages require @mentions with mention objects
+- Agents only receive messages where they are @mentioned
+- /messages/next for startup sync, not continuous polling
 """
 import logging
 import os
@@ -18,16 +22,11 @@ FEATHERLESS_BASE = "https://api.featherless.ai/v1"
 
 
 def call_llm(messages: list, api_key: str, model: str, base_url: str) -> str:
-    """Call any OpenAI-compatible LLM endpoint."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": model,
-        "messages": messages,
-        "max_tokens": 4096,
-    }
+    payload = {"model": model, "messages": messages, "max_tokens": 4096}
     resp = requests.post(
         f"{base_url}/chat/completions",
         json=payload,
@@ -38,12 +37,24 @@ def call_llm(messages: list, api_key: str, model: str, base_url: str) -> str:
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-class BasePollingAgent:
+def extract_mentions(content: str, participants: list) -> list:
     """
-    Polls Band REST API for messages addressed to this agent,
-    processes them with an LLM, sends reply back to the room.
+    Find @mentions in content and return mention objects.
+    participants = list of participant dicts from Band API.
     """
+    mentions = []
+    for p in participants:
+        name = p.get("name", "")
+        handle = p.get("handle", "")
+        agent_id = p.get("id", "")
+        if not agent_id:
+            continue
+        if (name and f"@{name}" in content) or (handle and f"@{handle}" in content):
+            mentions.append({"id": agent_id, "name": name, "handle": handle})
+    return mentions
 
+
+class BasePollingAgent:
     def __init__(
         self,
         name: str,
@@ -62,18 +73,27 @@ class BasePollingAgent:
         self.llm_base_url = llm_base_url
         self.room_id = room_id or BAND_ROOM_ID
         self.history = [{"role": "system", "content": system_prompt}]
+        self.my_id = None
+        self.participants_cache = []
 
     def run(self):
-        """Main polling loop."""
         # Validate connection
         try:
             me = self.client.me()
-            logger.info(f"[{self.name}] Connected to Band as: {me.get('name', 'unknown')}")
+            self.my_id = me.get("id")
+            logger.info(f"[{self.name}] Connected. Agent ID: {self.my_id}")
         except Exception as e:
-            logger.error(f"[{self.name}] Failed to connect to Band: {e}")
+            logger.error(f"[{self.name}] Band connection failed: {e}")
             return
 
-        logger.info(f"[{self.name}] Polling room {self.room_id} every {POLL_INTERVAL}s...")
+        # Cache participants
+        try:
+            self.participants_cache = self.client.get_participants(self.room_id)
+            logger.info(f"[{self.name}] Room has {len(self.participants_cache)} participants")
+        except Exception as e:
+            logger.warning(f"[{self.name}] Could not fetch participants: {e}")
+
+        logger.info(f"[{self.name}] Polling room {self.room_id}...")
 
         while True:
             try:
@@ -86,31 +106,29 @@ class BasePollingAgent:
                 logger.info(f"[{self.name}] Shutting down.")
                 break
             except Exception as e:
-                logger.error(f"[{self.name}] Polling error: {e}")
+                logger.error(f"[{self.name}] Error: {e}")
                 time.sleep(POLL_INTERVAL)
 
     def _handle_message(self, msg: dict):
         message_id = msg.get("id", "")
         content = msg.get("content", "")
         sender = msg.get("sender", {}).get("name", "unknown")
+        sender_id = msg.get("sender", {}).get("id", "")
 
-        logger.info(f"[{self.name}] Message from {sender}: {content[:100]}")
-
-        # Skip messages sent by this agent itself
-        if sender == self.name:
+        # Skip our own messages
+        if sender_id == self.my_id:
             if message_id:
-                self.client.mark_processed(message_id)
+                self.client.mark_processed(self.room_id, message_id)
             return
 
-        # Mark as processing
+        logger.info(f"[{self.name}] From {sender}: {content[:120]}")
+
         if message_id:
-            self.client.mark_processing(message_id)
+            self.client.mark_processing(self.room_id, message_id)
 
         try:
-            # Add to conversation history
             self.history.append({"role": "user", "content": f"[{sender}]: {content}"})
 
-            # Call LLM
             reply = call_llm(
                 messages=self.history,
                 api_key=self.llm_api_key,
@@ -118,18 +136,24 @@ class BasePollingAgent:
                 base_url=self.llm_base_url,
             )
 
-            # Add reply to history
             self.history.append({"role": "assistant", "content": reply})
 
-            # Send reply to Band room
-            self.client.send_message(self.room_id, reply)
-            logger.info(f"[{self.name}] Replied: {reply[:100]}")
+            # Extract mentions from reply
+            mentions = extract_mentions(reply, self.participants_cache)
 
-            # Mark as processed
+            if mentions:
+                # Send as message with mentions
+                self.client.send_message(self.room_id, reply, mentions)
+            else:
+                # No mentions found — post as event so it still appears in room
+                self.client.post_event(self.room_id, reply, message_type="thought")
+
+            logger.info(f"[{self.name}] Sent reply with {len(mentions)} mentions")
+
             if message_id:
-                self.client.mark_processed(message_id)
+                self.client.mark_processed(self.room_id, message_id)
 
         except Exception as e:
-            logger.error(f"[{self.name}] Error processing message: {e}")
+            logger.error(f"[{self.name}] Processing error: {e}")
             if message_id:
-                self.client.mark_failed(message_id, str(e))
+                self.client.mark_failed(self.room_id, message_id, str(e))
