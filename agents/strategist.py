@@ -1,71 +1,58 @@
-"""
-ShadowSignal - Strategist Agent
-Provider: AIML API (nvidia/nemotron-3-nano-omni-30b-a3b-reasoning)
-Runs as persistent WebSocket process on Railway.
-"""
-import asyncio
+"""ShadowSignal — Strategist Agent (AIML API / Nemotron)"""
 import logging
 import os
 from dotenv import load_dotenv
-from thenvoi import Agent
-from aiml_adapter import AIMLApiAdapter
+from base_agent import BasePollingAgent, AIML_BASE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [STRATEGIST] %(message)s")
-logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the Strategist Agent in ShadowSignal — an enterprise competitive intelligence system.
+SYSTEM_PROMPT = """You are the Strategist Agent in ShadowSignal — an enterprise competitive intelligence system running inside a Band collaboration room.
 
 YOUR JOB:
-- Receive GTM analysis from @AnalystAgent
-- Generate exactly 3 ranked counter-play strategies with ROI projections
-- Rank by: highest ROI first, then fastest implementation, then lowest risk
+When @StrategistAgent is mentioned or Analyst completes analysis, generate exactly 3 counter-play strategies.
+Rank by: highest ROI first, then fastest, then lowest risk.
 
-BAND ROOM BEHAVIOR:
-- Start every message with [STRATEGIST]
-- Output exactly this format for each strategy:
+OUTPUT FORMAT:
+Start every message with [STRATEGIST]
 
-  STRATEGY 1: [NAME]
-  Description: One sentence.
-  Steps: 1) ... 2) ... 3) ...
-  Projected ROI: X%
-  Timeline: X weeks
-  Risk Score: X/100
-  Resources: [list]
+STRATEGY 1: [NAME]
+Description: One sentence.
+Steps: 1) ... 2) ... 3) ...
+Projected ROI: X%
+Timeline: X weeks
+Risk Score: X/100 (lower = safer)
+Resources: list
 
-- After all 3 strategies, tag @RegulatoryAgent:
-  "[STRATEGIST] 3 strategies ready. @RegulatoryAgent please audit for compliance."
-- If analysis is unclear, challenge @AnalystAgent with specific questions
+STRATEGY 2: [NAME]
+[same format]
 
-Every strategy must be executable within 12 weeks maximum.
-"""
+STRATEGY 3: [NAME]
+[same format]
 
-async def main():
+End with: "@RegulatoryAgent strategies ready — please audit for compliance"
+
+All strategies must be executable within 12 weeks maximum."""
+
+def main():
     load_dotenv()
-    agent_id = os.getenv("STRATEGIST_AGENT_ID")
     api_key = os.getenv("STRATEGIST_API_KEY")
     aiml_key = os.getenv("AIML_API_KEY")
+    room_id = os.getenv("BAND_ROOM_ID")
 
-    if not agent_id or not api_key:
-        logger.error("Missing STRATEGIST_AGENT_ID or STRATEGIST_API_KEY"); return
-    if not aiml_key:
-        logger.error("Missing AIML_API_KEY"); return
+    if not api_key or not aiml_key or not room_id:
+        logging.error("Missing STRATEGIST_API_KEY, AIML_API_KEY, or BAND_ROOM_ID")
+        return
 
-    adapter = AIMLApiAdapter(
-        api_key=aiml_key,
-        model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+    agent = BasePollingAgent(
+        name="ShadowSignal Strategist",
+        agent_api_key=api_key,
         system_prompt=SYSTEM_PROMPT,
-        max_tokens=4096,
+        llm_api_key=aiml_key,
+        llm_model="nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+        llm_base_url=AIML_BASE,
+        room_id=room_id,
     )
-    agent = Agent.create(
-        adapter=adapter,
-        agent_id=agent_id,
-        api_key=api_key,
-        ws_url=os.getenv("THENVOI_WS_URL", "wss://app.band.ai/api/v1/socket/websocket"),
-        rest_url=os.getenv("THENVOI_REST_URL", "https://app.band.ai/"),
-    )
-    logger.info("Strategist Agent online — AIML API (Nemotron)")
-    await agent.run()
+    agent.run()
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    main()
