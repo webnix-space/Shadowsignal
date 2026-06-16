@@ -15,7 +15,8 @@ FEATHERLESS_BASE = "https://api.featherless.ai/v1"
 
 class BasePollingAgent:
     """
-    DEBUG VERSION: Verbose logging to diagnose Band.ai API issues.
+    FIXED: Uses X-API-Key header instead of Bearer token for Band.ai authentication.
+    Includes deduplication, error handling, and backoff.
     """
 
     def __init__(
@@ -38,10 +39,10 @@ class BasePollingAgent:
         self.room_id = room_id
         self.poll_interval = poll_interval
 
-        # Band API config
+        # Band API config — FIXED: X-API-Key instead of Bearer
         self.band_base = "https://app.band.ai/api/v1"
         self.band_headers = {
-            "Authorization": f"Bearer {agent_api_key}",
+            "X-API-Key": agent_api_key,
             "Content-Type": "application/json",
         }
 
@@ -60,10 +61,6 @@ class BasePollingAgent:
         # ─── WORKFLOW STATE ───
         self.last_reply_id = None
         self._lock = threading.Lock()
-
-        print(f"[{self.name}] INIT: room_id={room_id}, poll_interval={poll_interval}")
-        print(f"[{self.name}] INIT: llm_model={llm_model}, llm_base={llm_base_url}")
-        print(f"[{self.name}] INIT: db_path={self.db_path}")
 
     # ─── SQLite Deduplication ───
 
@@ -89,7 +86,6 @@ class BasePollingAgent:
         )
         self._processed_cache = {row[0] for row in c.fetchall()}
         conn.close()
-        print(f"[{self.name}] Loaded {len(self._processed_cache)} processed message IDs from DB")
 
     def _is_processed(self, msg_id: str) -> bool:
         if msg_id in self._processed_cache:
@@ -121,14 +117,12 @@ class BasePollingAgent:
         finally:
             conn.close()
 
-    # ─── Band API Helpers (with DEBUG logging) ───
+    # ─── Band API Helpers ───
 
     def _band_request(
         self, method: str, endpoint: str, **kwargs
     ) -> Optional[Dict]:
         url = f"{self.band_base}/{endpoint.lstrip("/")}"
-
-        print(f"[{self.name}] API {method} {url}")
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -136,38 +130,29 @@ class BasePollingAgent:
                     method, url, headers=self.band_headers, timeout=15, **kwargs
                 )
 
-                print(f"[{self.name}] API Response: {res.status_code} | len={len(res.text)}")
-
                 if res.status_code >= 500:
-                    print(f"[{self.name}] API 5xx error: {res.status_code}")
                     if attempt < self.max_retries:
                         time.sleep(2 ** attempt)
                         continue
                     return None
 
                 if res.status_code >= 400:
-                    print(f"[{self.name}] API 4xx error: {res.status_code} | body={res.text[:200]}")
                     return None
 
                 if res.status_code == 204 or not res.text:
                     return {}
 
                 try:
-                    data = res.json()
-                    print(f"[{self.name}] API JSON keys: {list(data.keys()) if isinstance(data, dict) else 'not dict'}")
-                    return data
+                    return res.json()
                 except json.JSONDecodeError:
-                    print(f"[{self.name}] API Invalid JSON: {res.text[:200]}")
                     return None
 
-            except requests.exceptions.RequestException as e:
-                print(f"[{self.name}] API RequestException: {e}")
+            except requests.exceptions.RequestException:
                 if attempt < self.max_retries:
                     time.sleep(2 ** attempt)
                     continue
                 return None
-            except Exception as e:
-                print(f"[{self.name}] API Unexpected error: {e}")
+            except Exception:
                 return None
 
         return None
@@ -175,17 +160,11 @@ class BasePollingAgent:
     def _get_messages(self) -> List[Dict]:
         res = self._band_request("GET", f"/agent/chats/{self.room_id}/messages")
         if res and isinstance(res, dict):
-            msgs = res.get("messages", []) or res.get("data", [])
-            print(f"[{self.name}] Got {len(msgs)} messages from API")
-            if msgs:
-                print(f"[{self.name}] First msg keys: {list(msgs[0].keys()) if isinstance(msgs[0], dict) else 'not dict'}")
-            return msgs
-        print(f"[{self.name}] Got empty/invalid response from messages API")
+            return res.get("messages", []) or res.get("data", [])
         return []
 
     def _send_reply(self, content: str) -> Optional[Dict]:
         payload = {"content": content, "type": "text"}
-        print(f"[{self.name}] Sending reply: {content[:100]}...")
         return self._band_request(
             "POST", f"/agent/chats/{self.room_id}/messages", json=payload
         )
@@ -223,7 +202,6 @@ class BasePollingAgent:
             ],
         }
         try:
-            print(f"[{self.name}] Calling LLM: {self.llm_model}")
             res = requests.post(
                 f"{self.llm_base_url}/chat/completions",
                 headers=headers,
@@ -232,11 +210,8 @@ class BasePollingAgent:
             )
             res.raise_for_status()
             data = res.json()
-            reply = data["choices"][0]["message"]["content"]
-            print(f"[{self.name}] LLM reply: {reply[:100]}...")
-            return reply
+            return data["choices"][0]["message"]["content"]
         except Exception as e:
-            print(f"[{self.name}] LLM error: {e}")
             return f"[ERROR] LLM call failed: {str(e)}"
 
     # ─── Mention & Routing Logic ───
@@ -248,84 +223,62 @@ class BasePollingAgent:
 
     def _should_handle(self, message: Dict) -> bool:
         text = message.get("content", "") or ""
-        sender = message.get("sender", "") or ""
         mentions = self._extract_mentions(text)
 
         my_clean = re.sub(r"[^a-zA-Z0-9]", "", self.name.lower())
-
-        print(f"[{self.name}] Routing check: mentions={mentions}, my_name={my_clean}, sender={sender}")
 
         if mentions:
             for m in mentions:
                 m_clean = re.sub(r"[^a-zA-Z0-9]", "", m.lower())
                 if m_clean == my_clean or m_clean in my_clean or my_clean in m_clean:
-                    print(f"[{self.name}] MATCHED mention: {m}")
                     return True
-            print(f"[{self.name}] No mention match, skipping")
             return False
 
-        print(f"[{self.name}] No mentions, handling as broadcast")
         return True
 
     def _is_from_self(self, message: Dict) -> bool:
         sender = message.get("sender", "") or ""
         sender_name = message.get("sender_name", "") or ""
-        is_self = self.name.lower() in (sender + sender_name).lower()
-        if is_self:
-            print(f"[{self.name}] Skipping own message from {sender}")
-        return is_self
+        return self.name.lower() in (sender + sender_name).lower()
 
     # ─── Main Polling Loop ───
 
     def run(self):
-        print(f"[{self.name}] === STARTING POLLING LOOP ===")
-        print(f"[{self.name}] Room: {self.room_id}")
-        print(f"[{self.name}] DB cache size: {len(self._processed_cache)}")
+        print(f"[{self.name}] Starting polling loop for room {self.room_id}")
 
         while True:
             try:
-                print(f"[{self.name}] --- Poll cycle ---")
                 messages = self._get_messages()
 
                 if not messages:
-                    print(f"[{self.name}] No messages, sleeping {self.poll_interval}s")
                     self.consecutive_errors = 0
                     time.sleep(self.poll_interval)
                     continue
-
-                print(f"[{self.name}] Processing {len(messages)} messages")
 
                 for msg in messages:
                     msg_id = msg.get("id") or msg.get("message_id")
                     if not msg_id:
                         msg_id = str(hash(json.dumps(msg, sort_keys=True)))
-                        print(f"[{self.name}] Generated fallback msg_id: {msg_id}")
-
-                    print(f"[{self.name}] Msg {msg_id}: content={msg.get('content', '')[:80]}...")
 
                     if self._is_processed(msg_id):
-                        print(f"[{self.name}] Msg {msg_id} already processed, skipping")
                         continue
 
                     if self._is_from_self(msg):
-                        print(f"[{self.name}] Msg {msg_id} is from self, marking processed")
                         self._mark_processed(msg_id)
                         continue
 
                     if not self._should_handle(msg):
-                        print(f"[{self.name}] Msg {msg_id} not for me, marking processed")
                         self._mark_processed(msg_id)
                         continue
 
                     content = msg.get("content", "") or ""
-                    print(f"[{self.name}] HANDLING msg {msg_id}: {content[:100]}...")
+                    print(f"[{self.name}] Handling: {content[:100]}...")
 
                     self._mark_processing(msg_id)
 
                     try:
                         reply = self._call_llm(content)
                     except Exception as e:
-                        print(f"[{self.name}] LLM error: {e}")
                         reply = f"[{self.name}] Error: {str(e)}"
 
                     sent = False
@@ -336,7 +289,6 @@ class BasePollingAgent:
                             print(f"[{self.name}] Reply sent successfully")
                             break
                         if attempt < self.max_retries:
-                            print(f"[{self.name}] Send failed, retrying in {2**attempt}s...")
                             time.sleep(2 ** attempt)
 
                     if not sent:
@@ -344,15 +296,12 @@ class BasePollingAgent:
 
                     self._mark_processed_api(msg_id)
                     self._mark_processed(msg_id)
-                    print(f"[{self.name}] Msg {msg_id} fully processed")
 
                 self.consecutive_errors = 0
 
             except Exception as e:
                 self.consecutive_errors += 1
-                print(f"[{self.name}] POLL CYCLE ERROR: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"[{self.name}] Poll cycle error: {e}")
 
             backoff = min(self.poll_interval * (2 ** self.consecutive_errors), self.max_backoff)
             if self.consecutive_errors > 0:
