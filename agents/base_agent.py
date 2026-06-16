@@ -15,11 +15,7 @@ FEATHERLESS_BASE = "https://api.featherless.ai/v1"
 
 class BasePollingAgent:
     """
-    Drop-in replacement for original BasePollingAgent with:
-    - SQLite message deduplication (prevents infinite loops)
-    - Exponential backoff on errors
-    - Idempotent reply emission (handles Band.ai 500s)
-    - LLM integration preserved exactly as before
+    DEBUG VERSION: Verbose logging to diagnose Band.ai API issues.
     """
 
     def __init__(
@@ -65,6 +61,10 @@ class BasePollingAgent:
         self.last_reply_id = None
         self._lock = threading.Lock()
 
+        print(f"[{self.name}] INIT: room_id={room_id}, poll_interval={poll_interval}")
+        print(f"[{self.name}] INIT: llm_model={llm_model}, llm_base={llm_base_url}")
+        print(f"[{self.name}] INIT: db_path={self.db_path}")
+
     # ─── SQLite Deduplication ───
 
     def _init_db(self):
@@ -89,6 +89,7 @@ class BasePollingAgent:
         )
         self._processed_cache = {row[0] for row in c.fetchall()}
         conn.close()
+        print(f"[{self.name}] Loaded {len(self._processed_cache)} processed message IDs from DB")
 
     def _is_processed(self, msg_id: str) -> bool:
         if msg_id in self._processed_cache:
@@ -120,42 +121,71 @@ class BasePollingAgent:
         finally:
             conn.close()
 
-    # ─── Band API Helpers (with retry/backoff) ───
+    # ─── Band API Helpers (with DEBUG logging) ───
 
     def _band_request(
         self, method: str, endpoint: str, **kwargs
     ) -> Optional[Dict]:
         url = f"{self.band_base}/{endpoint.lstrip("/")}"
+
+        print(f"[{self.name}] API {method} {url}")
+
         for attempt in range(self.max_retries + 1):
             try:
                 res = requests.request(
                     method, url, headers=self.band_headers, timeout=15, **kwargs
                 )
+
+                print(f"[{self.name}] API Response: {res.status_code} | len={len(res.text)}")
+
                 if res.status_code >= 500:
+                    print(f"[{self.name}] API 5xx error: {res.status_code}")
                     if attempt < self.max_retries:
                         time.sleep(2 ** attempt)
                         continue
                     return None
+
                 if res.status_code >= 400:
+                    print(f"[{self.name}] API 4xx error: {res.status_code} | body={res.text[:200]}")
                     return None
+
                 if res.status_code == 204 or not res.text:
                     return {}
-                return res.json()
-            except requests.exceptions.RequestException:
+
+                try:
+                    data = res.json()
+                    print(f"[{self.name}] API JSON keys: {list(data.keys()) if isinstance(data, dict) else 'not dict'}")
+                    return data
+                except json.JSONDecodeError:
+                    print(f"[{self.name}] API Invalid JSON: {res.text[:200]}")
+                    return None
+
+            except requests.exceptions.RequestException as e:
+                print(f"[{self.name}] API RequestException: {e}")
                 if attempt < self.max_retries:
                     time.sleep(2 ** attempt)
                     continue
                 return None
+            except Exception as e:
+                print(f"[{self.name}] API Unexpected error: {e}")
+                return None
+
         return None
 
     def _get_messages(self) -> List[Dict]:
         res = self._band_request("GET", f"/agent/chats/{self.room_id}/messages")
         if res and isinstance(res, dict):
-            return res.get("messages", []) or res.get("data", [])
+            msgs = res.get("messages", []) or res.get("data", [])
+            print(f"[{self.name}] Got {len(msgs)} messages from API")
+            if msgs:
+                print(f"[{self.name}] First msg keys: {list(msgs[0].keys()) if isinstance(msgs[0], dict) else 'not dict'}")
+            return msgs
+        print(f"[{self.name}] Got empty/invalid response from messages API")
         return []
 
     def _send_reply(self, content: str) -> Optional[Dict]:
         payload = {"content": content, "type": "text"}
+        print(f"[{self.name}] Sending reply: {content[:100]}...")
         return self._band_request(
             "POST", f"/agent/chats/{self.room_id}/messages", json=payload
         )
@@ -178,20 +208,9 @@ class BasePollingAgent:
             is not None
         )
 
-    def _mark_failed_api(self, msg_id: str, reason: str = "") -> bool:
-        return (
-            self._band_request(
-                "POST",
-                f"/agent/chats/{self.room_id}/messages/{msg_id}/failed",
-                json={"reason": reason} if reason else None,
-            )
-            is not None
-        )
-
-    # ─── LLM Helper (preserved from original) ───
+    # ─── LLM Helper ───
 
     def _call_llm(self, user_message: str) -> str:
-        """Call the configured LLM and return text response."""
         headers = {
             "Authorization": f"Bearer {self.llm_api_key}",
             "Content-Type": "application/json",
@@ -204,6 +223,7 @@ class BasePollingAgent:
             ],
         }
         try:
+            print(f"[{self.name}] Calling LLM: {self.llm_model}")
             res = requests.post(
                 f"{self.llm_base_url}/chat/completions",
                 headers=headers,
@@ -212,8 +232,11 @@ class BasePollingAgent:
             )
             res.raise_for_status()
             data = res.json()
-            return data["choices"][0]["message"]["content"]
+            reply = data["choices"][0]["message"]["content"]
+            print(f"[{self.name}] LLM reply: {reply[:100]}...")
+            return reply
         except Exception as e:
+            print(f"[{self.name}] LLM error: {e}")
             return f"[ERROR] LLM call failed: {str(e)}"
 
     # ─── Mention & Routing Logic ───
@@ -224,78 +247,87 @@ class BasePollingAgent:
         return re.findall(r"@([A-Za-z0-9_]+)", text)
 
     def _should_handle(self, message: Dict) -> bool:
-        """Handle if mentioned by name, or no mentions exist (broadcast/human msg)."""
         text = message.get("content", "") or ""
         sender = message.get("sender", "") or ""
         mentions = self._extract_mentions(text)
 
-        # Clean name for matching: "ShadowSignal Investigator" -> "shadowsignalinvestigator"
         my_clean = re.sub(r"[^a-zA-Z0-9]", "", self.name.lower())
+
+        print(f"[{self.name}] Routing check: mentions={mentions}, my_name={my_clean}, sender={sender}")
 
         if mentions:
             for m in mentions:
                 m_clean = re.sub(r"[^a-zA-Z0-9]", "", m.lower())
                 if m_clean == my_clean or m_clean in my_clean or my_clean in m_clean:
+                    print(f"[{self.name}] MATCHED mention: {m}")
                     return True
+            print(f"[{self.name}] No mention match, skipping")
             return False
 
-        # No mentions = handle it (human message or broadcast)
+        print(f"[{self.name}] No mentions, handling as broadcast")
         return True
 
     def _is_from_self(self, message: Dict) -> bool:
-        """Skip messages sent by this agent to prevent echo loops."""
         sender = message.get("sender", "") or ""
         sender_name = message.get("sender_name", "") or ""
-        return self.name.lower() in (sender + sender_name).lower()
+        is_self = self.name.lower() in (sender + sender_name).lower()
+        if is_self:
+            print(f"[{self.name}] Skipping own message from {sender}")
+        return is_self
 
     # ─── Main Polling Loop ───
 
     def run(self):
-        print(f"[{self.name}] Starting polling loop for room {self.room_id}")
+        print(f"[{self.name}] === STARTING POLLING LOOP ===")
+        print(f"[{self.name}] Room: {self.room_id}")
+        print(f"[{self.name}] DB cache size: {len(self._processed_cache)}")
 
         while True:
             try:
+                print(f"[{self.name}] --- Poll cycle ---")
                 messages = self._get_messages()
 
                 if not messages:
+                    print(f"[{self.name}] No messages, sleeping {self.poll_interval}s")
                     self.consecutive_errors = 0
                     time.sleep(self.poll_interval)
                     continue
 
+                print(f"[{self.name}] Processing {len(messages)} messages")
+
                 for msg in messages:
                     msg_id = msg.get("id") or msg.get("message_id")
                     if not msg_id:
-                        # Fallback: hash the message content for dedup
                         msg_id = str(hash(json.dumps(msg, sort_keys=True)))
+                        print(f"[{self.name}] Generated fallback msg_id: {msg_id}")
 
-                    # ─── DEDUPLICATION ───
+                    print(f"[{self.name}] Msg {msg_id}: content={msg.get('content', '')[:80]}...")
+
                     if self._is_processed(msg_id):
+                        print(f"[{self.name}] Msg {msg_id} already processed, skipping")
                         continue
 
-                    # ─── SKIP OWN MESSAGES ───
                     if self._is_from_self(msg):
+                        print(f"[{self.name}] Msg {msg_id} is from self, marking processed")
                         self._mark_processed(msg_id)
                         continue
 
-                    # ─── ROUTING: Only handle if mentioned or no mentions ───
                     if not self._should_handle(msg):
+                        print(f"[{self.name}] Msg {msg_id} not for me, marking processed")
                         self._mark_processed(msg_id)
                         continue
 
-                    # ─── PROCESS ───
                     content = msg.get("content", "") or ""
-                    print(f"[{self.name}] Handling: {content[:100]}...")
+                    print(f"[{self.name}] HANDLING msg {msg_id}: {content[:100]}...")
 
-                    # Mark processing on Band API
                     self._mark_processing(msg_id)
 
-                    # Generate reply via LLM
                     try:
                         reply = self._call_llm(content)
                     except Exception as e:
-                        reply = f"[{self.name}] Error generating response: {str(e)}"
+                        print(f"[{self.name}] LLM error: {e}")
+                        reply = f"[{self.name}] Error: {str(e)}"
 
-                    # Send reply (with retry)
                     sent = False
                     for attempt in range(self.max_retries + 1):
                         result = self._send_reply(reply)
@@ -304,28 +336,24 @@ class BasePollingAgent:
                             print(f"[{self.name}] Reply sent successfully")
                             break
                         if attempt < self.max_retries:
+                            print(f"[{self.name}] Send failed, retrying in {2**attempt}s...")
                             time.sleep(2 ** attempt)
 
                     if not sent:
-                        print(
-                            f"[{self.name}] Send failed after retries. "
-                            f"Marking processed to prevent spam."
-                        )
+                        print(f"[{self.name}] Send failed after retries, marking processed anyway")
 
-                    # Mark processed on Band API (best effort)
                     self._mark_processed_api(msg_id)
-
-                    # ─── ALWAYS mark as processed locally ───
                     self._mark_processed(msg_id)
+                    print(f"[{self.name}] Msg {msg_id} fully processed")
 
-                # Reset error counter on successful cycle
                 self.consecutive_errors = 0
 
             except Exception as e:
                 self.consecutive_errors += 1
-                print(f"[{self.name}] Poll cycle error: {e}")
+                print(f"[{self.name}] POLL CYCLE ERROR: {e}")
+                import traceback
+                traceback.print_exc()
 
-            # Adaptive sleep
             backoff = min(self.poll_interval * (2 ** self.consecutive_errors), self.max_backoff)
             if self.consecutive_errors > 0:
                 print(f"[{self.name}] Backing off {backoff}s (errors: {self.consecutive_errors})")
