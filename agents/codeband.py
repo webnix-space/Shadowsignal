@@ -1,91 +1,73 @@
-"""
-ShadowSignal - Codeband Agent
-Provider: Featherless AI (deepseek-ai/DeepSeek-V3.2)
-Runs as persistent WebSocket process on Railway.
-"""
-import asyncio
+"""ShadowSignal — Codeband Agent (Featherless / DeepSeek-V3.2)"""
 import logging
 import os
 from dotenv import load_dotenv
-from thenvoi import Agent
-from featherless_adapter import FeatherlessAdapter
+from base_agent import BasePollingAgent, FEATHERLESS_BASE
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [CODEBAND] %(message)s")
-logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are the Codeband Agent in ShadowSignal — an enterprise competitive intelligence system.
+SYSTEM_PROMPT = """You are the Codeband Agent in ShadowSignal — an enterprise competitive intelligence system running inside a Band collaboration room.
 
 YOUR JOB:
-- Receive compliance-cleared strategies from @RegulatoryAgent
-- Generate 3 production-ready deliverables in the Band room
-- Only proceed if you received [LOW RISK] or [MEDIUM RISK] clearance
-- If you see [CRITICAL RISK] or BLOCKED: post blocked status immediately and stop
+When @CodebandAgent is mentioned or Regulatory clears strategies, generate 3 production-ready deliverables.
+If you see [CRITICAL RISK] or BLOCKED: immediately post blocked status and stop.
 
-BAND ROOM BEHAVIOR:
-- Start every message with [CODEBAND]
-- If blocked: "[CODEBAND] ⛔ WORKFLOW BLOCKED — Awaiting human compliance review. No deliverables generated."
-- If cleared, generate all 3 deliverables:
+OUTPUT FORMAT:
+Start every message with [CODEBAND]
 
-  === DELIVERABLE 1: BATTLE CARD ===
-  Target: [COMPANY]
-  Their Weaknesses:
-  - [specific weakness with data]
-  - [specific weakness with data]
-  Our Positioning (3 statements):
-  1. [statement]
-  2. [statement]
-  3. [statement]
-  Objection Handlers:
-  - "They say X" → "We say Y"
+If blocked:
+"[CODEBAND] ⛔ WORKFLOW BLOCKED — Awaiting human compliance review. No deliverables generated."
 
-  === DELIVERABLE 2: ROI MODEL ===
-  Assumptions: [X users, $Y/user/month delta]
-  Monthly Savings: $[amount]
-  Annual Savings: $[amount]
-  Implementation Cost: $[estimate]
-  Break-even: [X weeks]
-  3-Year NPV: $[amount]
+If cleared, generate ALL THREE:
 
-  === DELIVERABLE 3: EXECUTIVE SUMMARY ===
-  Situation: [1 sentence]
-  Opportunity: [1 sentence]
-  Recommended Action: [1 sentence]
-  Timeline: [X weeks]
-  Risk Level: [LOW/MEDIUM]
-  Expected ROI: [X%]
+=== BATTLE CARD ===
+Target: [COMPANY]
+Their Weaknesses:
+- [weakness with data]
+- [weakness with data]
+Our Positioning:
+1. [statement]
+2. [statement]
+3. [statement]
+Objection Handlers:
+- "They say X" → "We say Y"
 
-- After generating all 3, tag @InvestigatorAgent to signal workflow complete:
-  "[CODEBAND] ✅ All deliverables generated. Workflow complete. @InvestigatorAgent standing by for next target."
+=== ROI MODEL ===
+Assumptions: X users, $Y/user/month delta
+Monthly Savings: $[amount]
+Annual Savings: $[amount]
+Break-even: X weeks
+3-Year NPV: $[amount]
 
-Be concise. Every word must be actionable.
+=== EXECUTIVE SUMMARY ===
+Situation: [1 sentence]
+Opportunity: [1 sentence]  
+Action: [1 sentence]
+Timeline: X weeks | Risk: LOW/MEDIUM | ROI: X%
+
+End with: "@InvestigatorAgent ✅ workflow complete — ready for next target"
 """
 
-async def main():
+def main():
     load_dotenv()
-    agent_id = os.getenv("CODEBAND_AGENT_ID")
     api_key = os.getenv("CODEBAND_API_KEY")
     featherless_key = os.getenv("FEATHERLESS_API_KEY")
+    room_id = os.getenv("BAND_ROOM_ID")
 
-    if not agent_id or not api_key:
-        logger.error("Missing CODEBAND_AGENT_ID or CODEBAND_API_KEY"); return
-    if not featherless_key:
-        logger.error("Missing FEATHERLESS_API_KEY"); return
+    if not api_key or not featherless_key or not room_id:
+        logging.error("Missing CODEBAND_API_KEY, FEATHERLESS_API_KEY, or BAND_ROOM_ID")
+        return
 
-    adapter = FeatherlessAdapter(
-        api_key=featherless_key,
-        model="deepseek-ai/DeepSeek-V3.2",
+    agent = BasePollingAgent(
+        name="ShadowSignal Codeband",
+        agent_api_key=api_key,
         system_prompt=SYSTEM_PROMPT,
-        max_tokens=8192,
+        llm_api_key=featherless_key,
+        llm_model="deepseek-ai/DeepSeek-V3.2",
+        llm_base_url=FEATHERLESS_BASE,
+        room_id=room_id,
     )
-    agent = Agent.create(
-        adapter=adapter,
-        agent_id=agent_id,
-        api_key=api_key,
-        ws_url=os.getenv("THENVOI_WS_URL", "wss://app.band.ai/api/v1/socket/websocket"),
-        rest_url=os.getenv("THENVOI_REST_URL", "https://app.band.ai/"),
-    )
-    logger.info("Codeband Agent online — Featherless (DeepSeek-V3.2)")
-    await agent.run()
+    agent.run()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
