@@ -1,8 +1,6 @@
 """
-Base polling agent using Band REST API directly.
-FIXED: Per-agent SQLite deduplication (not global set).
-FIXED: Mention extraction matches @AgentName format.
-FIXED: All 5 agents work independently.
+Base polling agent using Band REST API + Bright Data for REAL competitive intelligence.
+FIXED: Per-agent SQLite deduplication + LOOP DETECTION + REAL DATA via Bright Data.
 """
 import logging
 import os
@@ -12,6 +10,7 @@ import re
 import requests
 from datetime import datetime
 from band_client import BandClient
+from bright_data import BrightDataClient, format_intel_for_llm
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +19,25 @@ BAND_ROOM_ID = os.getenv("BAND_ROOM_ID", "")
 
 AIML_BASE = "https://api.aimlapi.com/v1"
 FEATHERLESS_BASE = "https://api.featherless.ai/v1"
+
+# Loop detection triggers
+LOOP_TRIGGERS = [
+    "workflow complete",
+    "ready for next target",
+    "acknowledged",
+    "intel summary",
+    "analysis complete",
+    "strategies ready",
+    "cleared — please generate",
+]
+
+AGENT_ORDER = [
+    "ShadowSignal Investigator",
+    "ShadowSignal Analyst",
+    "ShadowSignal Strategist",
+    "ShadowSignal Regulatory",
+    "ShadowSignal Codeband",
+]
 
 
 def call_llm(messages: list, api_key: str, model: str, base_url: str) -> str:
@@ -47,72 +65,30 @@ def safe_get(obj, *keys, default=None):
 
 
 def extract_mentions(content: str, participants: list) -> list:
-    """
-    FIXED: Extract @AgentName mentions from content and match to participants.
-    Handles both @HandleName and @AgentName formats.
-    """
     if not content or not participants:
         return []
-
     mentions = []
     content_lower = content.lower()
-
-    # Find all @mentions in the content
-    mention_patterns = re.findall(r"@([A-Za-z0-9_\-]+)", content)
-
     for p in participants:
         if not isinstance(p, dict):
             continue
-
         agent_id = p.get("id") or safe_get(p, "agent", "id")
         name = p.get("name", "")
         handle = p.get("handle", "")
-
         if not agent_id:
             continue
-
-        # Check if this participant is mentioned
-        is_mentioned = False
-
-        # Check by name (e.g., "ShadowSignal Analyst")
+        checks = []
         if name:
-            name_lower = name.lower()
-            # Check exact @Name
-            if f"@{name}".lower() in content_lower:
-                is_mentioned = True
-            # Check @LastWordOfName (e.g., @Analyst from "ShadowSignal Analyst")
-            name_parts = name_lower.split()
-            for part in name_parts:
-                if f"@{part}" in content_lower:
-                    is_mentioned = True
-            # Check if any mention pattern matches name
-            for pattern in mention_patterns:
-                if pattern.lower() in name_lower or name_lower in pattern.lower():
-                    is_mentioned = True
-
-        # Check by handle (e.g., "webnix/shadowsignal-analyst")
+            checks.append(f"@{name}".lower() in content_lower)
+            checks.append(name.lower() in content_lower and "@" in content)
         if handle:
-            handle_lower = handle.lower()
-            # Extract last part of handle (e.g., "shadowsignal-analyst")
-            handle_parts = handle_lower.split("/")
-            short_handle = handle_parts[-1] if handle_parts else handle_lower
-
-            if f"@{handle}".lower() in content_lower:
-                is_mentioned = True
-            if f"@{short_handle}" in content_lower:
-                is_mentioned = True
-            # Check if mention pattern matches handle
-            for pattern in mention_patterns:
-                if pattern.lower() in handle_lower or short_handle in pattern.lower():
-                    is_mentioned = True
-
-        if is_mentioned:
+            checks.append(f"@{handle}".lower() in content_lower)
+        if any(checks):
             mentions.append({
                 "id": agent_id,
                 "name": name,
                 "handle": handle or name.lower().replace(" ", "-")
             })
-
     return mentions
 
 
@@ -139,7 +115,9 @@ class BasePollingAgent:
         self.my_name = name
         self.participants_cache = []
 
-        # FIXED: Per-agent SQLite deduplication (NOT global set!)
+        # Bright Data for real-time intel
+        self.bright_data = BrightDataClient()
+
         safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", name.lower())
         self.db_path = f"/tmp/shadowsignal_{safe_name}_processed.db"
         self._init_db()
@@ -199,16 +177,37 @@ class BasePollingAgent:
         finally:
             conn.close()
 
+    def _is_loop_message(self, content: str, sender_name: str) -> bool:
+        content_lower = content.lower()
+        for trigger in LOOP_TRIGGERS:
+            if trigger in content_lower:
+                logger.info(f"[{self.name}] LOOP DETECTED: '{trigger}' — skipping")
+                return True
+        try:
+            my_index = AGENT_ORDER.index(self.name)
+            sender_index = AGENT_ORDER.index(sender_name)
+            if sender_index > my_index:
+                logger.info(f"[{self.name}] LOOP DETECTED: downstream msg from {sender_name}")
+                return True
+        except ValueError:
+            pass
+        return False
+
+    def _extract_company_name(self, content: str) -> str:
+        """Extract company name from user query like 'analyze nvidia' or 'analyze google'."""
+        # Remove mentions and common words
+        cleaned = re.sub(r"@[A-Za-z0-9_\-]+", "", content)
+        cleaned = re.sub(r"analyze|research|intel|competitive|check|review", "", cleaned, flags=re.IGNORECASE)
+        cleaned = cleaned.strip()
+        # Return first meaningful word
+        words = [w for w in cleaned.split() if len(w) > 2]
+        return words[0] if words else cleaned
+
     def run(self):
         try:
             me = self.client.me()
-            logger.info(f"[{self.name}] /me response: {me}")
             if isinstance(me, dict):
-                self.my_id = (
-                    me.get("id") or
-                    safe_get(me, "agent", "id") or
-                    safe_get(me, "data", "id")
-                )
+                self.my_id = me.get("id") or safe_get(me, "agent", "id") or safe_get(me, "data", "id")
                 api_name = me.get("name") or safe_get(me, "agent", "name")
                 if api_name:
                     self.my_name = api_name
@@ -219,7 +218,6 @@ class BasePollingAgent:
 
         try:
             participants_resp = self.client.get_participants(self.room_id)
-            logger.info(f"[{self.name}] Participants response type: {type(participants_resp)}")
             if isinstance(participants_resp, list):
                 self.participants_cache = participants_resp
             elif isinstance(participants_resp, dict):
@@ -228,10 +226,6 @@ class BasePollingAgent:
                         self.participants_cache = participants_resp[key]
                         break
             logger.info(f"[{self.name}] {len(self.participants_cache)} participants cached")
-            # Log participant names for debugging
-            for p in self.participants_cache:
-                if isinstance(p, dict):
-                    logger.info(f"  Participant: {p.get('name')} id={p.get('id')} handle={p.get('handle')}")
         except Exception as e:
             logger.warning(f"[{self.name}] Participants fetch failed: {e}")
 
@@ -252,10 +246,8 @@ class BasePollingAgent:
 
     def _handle_message(self, msg):
         if not isinstance(msg, dict):
-            logger.warning(f"[{self.name}] Non-dict message: {type(msg)} = {msg}")
             return
 
-        # Extract message ID
         message_id = (
             msg.get("id") or
             safe_get(msg, "message", "id") or
@@ -263,12 +255,9 @@ class BasePollingAgent:
             ""
         )
 
-        # FIXED: Check per-agent SQLite dedup (not global set)
         if message_id and self._is_processed(message_id):
-            logger.info(f"[{self.name}] Skipping already-processed: {message_id}")
             return
 
-        # Extract content
         content = (
             msg.get("content") or
             safe_get(msg, "message", "content") or
@@ -277,18 +266,15 @@ class BasePollingAgent:
         )
         content = str(content) if content else ""
 
-        # Extract sender
         sender_obj = msg.get("sender") or msg.get("author") or msg.get("user") or {}
         if isinstance(sender_obj, dict):
             sender_id = sender_obj.get("id", "")
             sender_name = sender_obj.get("name", "unknown")
-            sender_handle = sender_obj.get("handle", "")
         else:
             sender_id = ""
             sender_name = str(sender_obj) if sender_obj else "unknown"
-            sender_handle = ""
 
-        logger.info(f"[{self.name}] Message id={message_id} from_id={sender_id} my_id={self.my_id} content={content[:80]}")
+        logger.info(f"[{self.name}] Message id={message_id} from={sender_name} content={content[:80]}")
 
         # Skip own messages
         is_own = False
@@ -298,7 +284,16 @@ class BasePollingAgent:
             is_own = True
 
         if is_own:
-            logger.info(f"[{self.name}] Skipping own message")
+            if message_id:
+                self._mark_processed(message_id)
+                try:
+                    self.client.mark_processed(self.room_id, message_id)
+                except Exception:
+                    pass
+            return
+
+        # Loop detection
+        if self._is_loop_message(content, sender_name):
             if message_id:
                 self._mark_processed(message_id)
                 try:
@@ -309,14 +304,32 @@ class BasePollingAgent:
 
         # Mark processing
         if message_id:
-            self._mark_processed(message_id)  # Mark locally first
+            self._mark_processed(message_id)
             try:
                 self.client.mark_processing(self.room_id, message_id)
             except Exception as e:
                 logger.warning(f"[{self.name}] mark_processing failed: {e}")
 
         try:
-            self.history.append({"role": "user", "content": f"[{sender_name}]: {content}"})
+            # Build user message with optional real-time data
+            user_message = f"[{sender_name}]: {content}"
+
+            # Investigator fetches real-time data via Bright Data
+            if self.name == "ShadowSignal Investigator" and "analyze" in content.lower():
+                company = self._extract_company_name(content)
+                if company and self.bright_data.api_key:
+                    logger.info(f"[{self.name}] Fetching real-time intel for: {company}")
+                    intel = self.bright_data.get_competitive_intel(company)
+                    if intel["sources"]:
+                        intel_text = format_intel_for_llm(intel)
+                        user_message = f"{user_message}
+
+--- REAL-TIME WEB DATA ---
+{intel_text}
+--- END WEB DATA ---"
+                        logger.info(f"[{self.name}] Added {len(intel['sources'])} real sources")
+
+            self.history.append({"role": "user", "content": user_message})
 
             reply = call_llm(
                 messages=self.history,
@@ -331,7 +344,6 @@ class BasePollingAgent:
             self.history.append({"role": "assistant", "content": reply})
             logger.info(f"[{self.name}] LLM reply: {reply[:150]}")
 
-            # FIXED: Extract mentions with improved matching
             mentions = extract_mentions(reply, self.participants_cache)
             logger.info(f"[{self.name}] Mentions found: {[m['name'] for m in mentions]}")
 
@@ -345,14 +357,12 @@ class BasePollingAgent:
                     logger.error(f"[{self.name}] send_message failed: {e}")
 
             if not sent:
-                # Fallback: post as event (no mention required)
                 try:
                     self.client.post_event(self.room_id, reply[:1000], message_type="thought")
                     logger.info(f"[{self.name}] Posted as event")
                 except Exception as e:
                     logger.error(f"[{self.name}] post_event failed: {e}")
 
-            # Mark processed on Band API
             if message_id:
                 try:
                     self.client.mark_processed(self.room_id, message_id)
