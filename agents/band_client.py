@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List
 class BandClient:
     """
     FIXED: Uses X-API-Key header for Band.ai Agent API authentication.
-    Confirmed from official docs: Agent API uses X-API-Key header.
+    FIXED: Uses "body" field (not "content") for message text.
     Includes full error logging and all agent endpoints.
     """
 
@@ -39,7 +39,8 @@ class BandClient:
 
                 # DEBUG: Log all non-2xx for diagnostics
                 if response.status_code >= 400:
-                    print(f"[BandClient] {method} {endpoint} → HTTP {response.status_code}: {response.text[:300]}")
+                    body_preview = response.text[:300] if response.text else "(empty body)"
+                    print(f"[BandClient] {method} {endpoint} → HTTP {response.status_code}: {body_preview}")
 
                 if response.status_code >= 500:
                     if attempt < self.max_retries:
@@ -57,6 +58,10 @@ class BandClient:
 
                 if response.status_code == 404:
                     print(f"[BandClient] NOT FOUND: {endpoint}")
+                    return None
+
+                if response.status_code == 422:
+                    print(f"[BandClient] VALIDATION ERROR: 422 — Check payload field names (use 'body' not 'content')")
                     return None
 
                 if response.status_code >= 400:
@@ -111,8 +116,11 @@ class BandClient:
             return result.get("messages", []) or result.get("data", [])
         return []
 
-    def send_message(self, chat_id: str, content: str) -> Optional[Dict]:
-        payload = {"content": content, "type": "text"}
+    def send_message(self, chat_id: str, body: str) -> Optional[Dict]:
+        """
+        FIXED: Band API expects "body" (not "content") for message text.
+        """
+        payload = {"body": body, "type": "text"}  # ← FIXED: was "content", now "body"
         return self._request("POST", f"/agent/chats/{chat_id}/messages", json=payload)
 
     def send_event(self, chat_id: str, event_type: str, data: Dict) -> Optional[Dict]:
