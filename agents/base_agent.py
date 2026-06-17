@@ -1,6 +1,7 @@
 """
 Base polling agent using Band REST API + Bright Data for REAL competitive intelligence.
 FIXED: Per-agent SQLite deduplication + LOOP DETECTION + REAL DATA via Bright Data.
+FIXED: F-string syntax error (line 325).
 """
 import logging
 import os
@@ -195,11 +196,9 @@ class BasePollingAgent:
 
     def _extract_company_name(self, content: str) -> str:
         """Extract company name from user query like 'analyze nvidia' or 'analyze google'."""
-        # Remove mentions and common words
         cleaned = re.sub(r"@[A-Za-z0-9_\-]+", "", content)
         cleaned = re.sub(r"analyze|research|intel|competitive|check|review", "", cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.strip()
-        # Return first meaningful word
         words = [w for w in cleaned.split() if len(w) > 2]
         return words[0] if words else cleaned
 
@@ -322,10 +321,11 @@ class BasePollingAgent:
                     intel = self.bright_data.get_competitive_intel(company)
                     if intel["sources"]:
                         intel_text = format_intel_for_llm(intel)
-                        user_message = f"{user_message}
+                        # FIXED: Use string concatenation instead of multi-line f-string
+                        user_message = user_message + "
 
 --- REAL-TIME WEB DATA ---
-{intel_text}
+" + intel_text + "
 --- END WEB DATA ---"
                         logger.info(f"[{self.name}] Added {len(intel['sources'])} real sources")
 
