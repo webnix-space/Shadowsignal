@@ -1,181 +1,160 @@
+"""
+Band REST API Client
+Uses X-API-Key header (NOT Bearer token).
+Base URL: https://app.band.ai/api/v1/agent
+Docs: https://docs.band.ai/api/agent-api
+"""
+import logging
+import os
 import requests
-import json
-import time
-from typing import Optional, Dict, Any, List
+
+logger = logging.getLogger(__name__)
+
+BAND_BASE = "https://app.band.ai/api/v1/agent"
+
 
 class BandClient:
-    """
-    FIXED: Uses X-API-Key header for Band.ai Agent API authentication.
-    FIXED: Uses "body" field (not "content") for message text.
-    Includes full error logging and all agent endpoints.
-    """
-
-    def __init__(self, api_key: str, base_url: str = "https://app.band.ai/api/v1"):
-        self.api_key = api_key
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, agent_api_key: str):
+        self.api_key = agent_api_key
         self.headers = {
-            "X-API-Key": api_key,
+            "X-API-Key": agent_api_key,
             "Content-Type": "application/json",
-            "Accept": "application/json"
         }
-        self.max_retries = 2
-        self.timeout = 15
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict[str, Any]]:
-        url = f"{self.base_url}/{endpoint.lstrip("/")}"
-        headers = {**self.headers}
-        if "headers" in kwargs:
-            headers.update(kwargs.pop("headers"))
-
-        for attempt in range(self.max_retries + 1):
-            try:
-                response = requests.request(
-                    method=method,
-                    url=url,
-                    headers=headers,
-                    timeout=self.timeout,
-                    **kwargs
-                )
-
-                # DEBUG: Log all non-2xx for diagnostics
-                if response.status_code >= 400:
-                    body_preview = response.text[:300] if response.text else "(empty body)"
-                    print(f"[BandClient] {method} {endpoint} → HTTP {response.status_code}: {body_preview}")
-
-                if response.status_code >= 500:
-                    if attempt < self.max_retries:
-                        time.sleep(2 ** attempt)
-                        continue
-                    return None
-
-                if response.status_code == 401:
-                    print(f"[BandClient] AUTH FAILED: 401 — Invalid X-API-Key. Check your agent API key.")
-                    return None
-
-                if response.status_code == 403:
-                    print(f"[BandClient] AUTH FAILED: 403 — Agent lacks permission for this operation.")
-                    return None
-
-                if response.status_code == 404:
-                    print(f"[BandClient] NOT FOUND: {endpoint}")
-                    return None
-
-                if response.status_code == 422:
-                    print(f"[BandClient] VALIDATION ERROR: 422 — Check payload field names (use 'body' not 'content')")
-                    return None
-
-                if response.status_code >= 400:
-                    return None
-
-                if response.status_code == 204 or not response.text:
-                    return {}
-
-                try:
-                    return response.json()
-                except json.JSONDecodeError:
-                    print(f"[BandClient] JSON decode error: {response.text[:200]}")
-                    return None
-
-            except requests.exceptions.Timeout:
-                print(f"[BandClient] Timeout on {method} {endpoint}")
-                if attempt < self.max_retries:
-                    time.sleep(2 ** attempt)
-                    continue
-                return None
-            except requests.exceptions.RequestException as e:
-                print(f"[BandClient] Request error: {e}")
-                if attempt < self.max_retries:
-                    time.sleep(2 ** attempt)
-                    continue
-                return None
-            except Exception as e:
-                print(f"[BandClient] Unexpected error: {e}")
-                return None
-
-        return None
-
-    # ─── Agent Identity ───
-    def get_me(self) -> Optional[Dict]:
+    def me(self) -> dict:
         """Validate connection and get agent identity."""
-        return self._request("GET", "/agent/me")
+        r = requests.get(f"{BAND_BASE}/me", headers=self.headers, timeout=10)
+        r.raise_for_status()
+        return r.json()
 
-    def get_peers(self) -> Optional[Dict]:
-        """Get agents this agent can recruit."""
-        return self._request("GET", "/agent/peers")
+    def get_chats(self) -> list:
+        r = requests.get(f"{BAND_BASE}/chats", headers=self.headers, timeout=10)
+        r.raise_for_status()
+        return r.json()
 
-    # ─── Chat/Room Management ───
-    def get_chats(self) -> Optional[Dict]:
-        return self._request("GET", "/agent/chats")
+    def get_participants(self, chat_id: str) -> list:
+        r = requests.get(
+            f"{BAND_BASE}/chats/{chat_id}/participants",
+            headers=self.headers,
+            timeout=10
+        )
+        r.raise_for_status()
+        return r.json()
 
-    def get_chat(self, chat_id: str) -> Optional[Dict]:
-        return self._request("GET", f"/agent/chats/{chat_id}")
+    def send_message(self, chat_id: str, content: str, mentions: list = None) -> dict:
+        """
+        Send a message to a chat room.
+        Payload: {"message": {"content": "...", "mentions": [...]}}
+        """
+        payload = {
+            "message": {
+                "content": content,
+                "mentions": mentions or []
+            }
+        }
+        r = requests.post(
+            f"{BAND_BASE}/chats/{chat_id}/messages",
+            headers=self.headers,
+            json=payload,
+            timeout=15,
+        )
+        # DEBUG: log errors
+        if r.status_code >= 400:
+            logger.error(f"[BandClient] send_message failed: {r.status_code} {r.text[:300]}")
+        r.raise_for_status()
+        return r.json()
+
+    def post_event(self, chat_id: str, content: str, message_type: str = "thought") -> dict:
+        """Post an event (thought, tool_call, error) — no mention required."""
+        payload = {
+            "event": {
+                "content": content,
+                "message_type": message_type,
+            }
+        }
+        r = requests.post(
+            f"{BAND_BASE}/chats/{chat_id}/events",
+            headers=self.headers,
+            json=payload,
+            timeout=15,
+        )
+        if r.status_code >= 400:
+            logger.error(f"[BandClient] post_event failed: {r.status_code} {r.text[:300]}")
+        r.raise_for_status()
+        return r.json()
+
+    def get_next_message(self, chat_id: str) -> dict | None:
+        """Get next unprocessed message. Returns None (204) if queue empty."""
+        r = requests.get(
+            f"{BAND_BASE}/chats/{chat_id}/messages/next",
+            headers=self.headers,
+            timeout=10,
+        )
+        if r.status_code == 204:
+            return None
+        if r.status_code >= 400:
+            logger.error(f"[BandClient] get_next_message failed: {r.status_code} {r.text[:300]}")
+        r.raise_for_status()
+        return r.json()
 
     def get_messages(self, chat_id: str, limit: int = 50) -> list:
-        result = self._request("GET", f"/agent/chats/{chat_id}/messages", params={"limit": limit})
-        if result and isinstance(result, dict):
-            return result.get("messages", []) or result.get("data", [])
-        return []
-
-    def send_message(self, chat_id: str, body: str) -> Optional[Dict]:
-        """
-        FIXED: Band API expects "body" (not "content") for message text.
-        """
-        payload = {"body": body, "type": "text"}  # ← FIXED: was "content", now "body"
-        return self._request("POST", f"/agent/chats/{chat_id}/messages", json=payload)
-
-    def send_event(self, chat_id: str, event_type: str, data: Dict) -> Optional[Dict]:
-        """Send tool calls, thoughts, errors (informational records)."""
-        payload = {"type": event_type, "data": data}
-        return self._request("POST", f"/agent/chats/{chat_id}/events", json=payload)
-
-    # ─── Message Lifecycle ───
-    def mark_processing(self, chat_id: str, message_id: str) -> bool:
-        return self._request(
-            "POST", f"/agent/chats/{chat_id}/messages/{message_id}/processing"
-        ) is not None
-
-    def mark_processed(self, chat_id: str, message_id: str) -> bool:
-        return self._request(
-            "POST", f"/agent/chats/{chat_id}/messages/{message_id}/processed"
-        ) is not None
-
-    def mark_failed(self, chat_id: str, message_id: str, reason: str = "") -> bool:
-        payload = {"reason": reason} if reason else None
-        return self._request(
-            "POST", f"/agent/chats/{chat_id}/messages/{message_id}/failed",
-            json=payload
-        ) is not None
-
-    # ─── Advanced ───
-    def get_next_message(self, chat_id: str) -> Optional[Dict]:
-        """Get next unprocessed message (mention-filtered)."""
-        result = self._request("GET", f"/agent/chats/{chat_id}/messages/next")
-        if result and isinstance(result, dict):
-            return result.get("data", result)
-        return None
-
-    def get_context(self, chat_id: str) -> list:
-        """Get messages agent sent OR was mentioned in (for reconnection)."""
-        result = self._request("GET", f"/agent/chats/{chat_id}/context")
-        if result and isinstance(result, dict):
-            return result.get("messages", []) or result.get("data", [])
-        return []
-
-    def get_events(self, chat_id: str) -> list:
-        result = self._request("GET", f"/agent/chats/{chat_id}/events")
-        if result and isinstance(result, dict):
-            return result.get("events", []) or result.get("data", [])
-        return []
-
-    def get_members(self, chat_id: str) -> list:
-        result = self._request("GET", f"/agent/chats/{chat_id}/members")
-        if result and isinstance(result, dict):
-            return result.get("members", []) or result.get("data", [])
-        return []
-
-    def add_participant(self, chat_id: str, participant_id: str) -> Optional[Dict]:
-        """Recruit a peer agent into a chat room."""
-        return self._request(
-            "POST", f"/agent/chats/{chat_id}/participants",
-            json={"participant_id": participant_id}
+        """Get recent messages (fallback if get_next_message fails)."""
+        r = requests.get(
+            f"{BAND_BASE}/chats/{chat_id}/messages",
+            headers=self.headers,
+            params={"limit": limit},
+            timeout=10,
         )
+        if r.status_code >= 400:
+            logger.error(f"[BandClient] get_messages failed: {r.status_code} {r.text[:300]}")
+            return []
+        data = r.json()
+        if isinstance(data, dict):
+            return data.get("messages", []) or data.get("data", [])
+        return data if isinstance(data, list) else []
+
+    def mark_processing(self, chat_id: str, message_id: str) -> None:
+        requests.post(
+            f"{BAND_BASE}/chats/{chat_id}/messages/{message_id}/processing",
+            headers=self.headers,
+            timeout=10,
+        )
+
+    def mark_processed(self, chat_id: str, message_id: str) -> None:
+        requests.post(
+            f"{BAND_BASE}/chats/{chat_id}/messages/{message_id}/processed",
+            headers=self.headers,
+            timeout=10,
+        )
+
+    def mark_failed(self, chat_id: str, message_id: str, error: str = "") -> None:
+        requests.post(
+            f"{BAND_BASE}/chats/{chat_id}/messages/{message_id}/failed",
+            headers=self.headers,
+            json={"error": error},
+            timeout=10,
+        )
+
+    def get_context(self, chat_id: str) -> dict:
+        """Get conversation history for rehydration."""
+        r = requests.get(
+            f"{BAND_BASE}/chats/{chat_id}/context",
+            headers=self.headers,
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def get_peers(self, not_in_chat: str = None) -> list:
+        """List peers available to recruit."""
+        params = {}
+        if not_in_chat:
+            params["not_in_chat"] = not_in_chat
+        r = requests.get(
+            f"{BAND_BASE}/peers",
+            headers=self.headers,
+            params=params,
+            timeout=10,
+        )
+        r.raise_for_status()
+        return r.json()
