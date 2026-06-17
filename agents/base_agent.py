@@ -1,8 +1,8 @@
 """
 Base polling agent using Band REST API directly.
 FIXED: Per-agent SQLite deduplication (not global set).
-FIXED: Proper message handling with nested payload.
-FIXED: All 5 agents can work independently.
+FIXED: Mention extraction matches @AgentName format.
+FIXED: All 5 agents work independently.
 """
 import logging
 import os
@@ -47,30 +47,72 @@ def safe_get(obj, *keys, default=None):
 
 
 def extract_mentions(content: str, participants: list) -> list:
+    """
+    FIXED: Extract @AgentName mentions from content and match to participants.
+    Handles both @HandleName and @AgentName formats.
+    """
     if not content or not participants:
         return []
+
     mentions = []
     content_lower = content.lower()
+
+    # Find all @mentions in the content
+    mention_patterns = re.findall(r"@([A-Za-z0-9_\-]+)", content)
+
     for p in participants:
         if not isinstance(p, dict):
             continue
+
         agent_id = p.get("id") or safe_get(p, "agent", "id")
         name = p.get("name", "")
         handle = p.get("handle", "")
+
         if not agent_id:
             continue
-        checks = []
+
+        # Check if this participant is mentioned
+        is_mentioned = False
+
+        # Check by name (e.g., "ShadowSignal Analyst")
         if name:
-            checks.append(f"@{name}".lower() in content_lower)
-            checks.append(name.lower() in content_lower and "@" in content)
+            name_lower = name.lower()
+            # Check exact @Name
+            if f"@{name}".lower() in content_lower:
+                is_mentioned = True
+            # Check @LastWordOfName (e.g., @Analyst from "ShadowSignal Analyst")
+            name_parts = name_lower.split()
+            for part in name_parts:
+                if f"@{part}" in content_lower:
+                    is_mentioned = True
+            # Check if any mention pattern matches name
+            for pattern in mention_patterns:
+                if pattern.lower() in name_lower or name_lower in pattern.lower():
+                    is_mentioned = True
+
+        # Check by handle (e.g., "webnix/shadowsignal-analyst")
         if handle:
-            checks.append(f"@{handle}".lower() in content_lower)
-        if any(checks):
+            handle_lower = handle.lower()
+            # Extract last part of handle (e.g., "shadowsignal-analyst")
+            handle_parts = handle_lower.split("/")
+            short_handle = handle_parts[-1] if handle_parts else handle_lower
+
+            if f"@{handle}".lower() in content_lower:
+                is_mentioned = True
+            if f"@{short_handle}" in content_lower:
+                is_mentioned = True
+            # Check if mention pattern matches handle
+            for pattern in mention_patterns:
+                if pattern.lower() in handle_lower or short_handle in pattern.lower():
+                    is_mentioned = True
+
+        if is_mentioned:
             mentions.append({
                 "id": agent_id,
                 "name": name,
                 "handle": handle or name.lower().replace(" ", "-")
             })
+
     return mentions
 
 
@@ -97,7 +139,7 @@ class BasePollingAgent:
         self.my_name = name
         self.participants_cache = []
 
-        # FIXED: Per-agent SQLite deduplication (not global set!)
+        # FIXED: Per-agent SQLite deduplication (NOT global set!)
         safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", name.lower())
         self.db_path = f"/tmp/shadowsignal_{safe_name}_processed.db"
         self._init_db()
@@ -186,6 +228,10 @@ class BasePollingAgent:
                         self.participants_cache = participants_resp[key]
                         break
             logger.info(f"[{self.name}] {len(self.participants_cache)} participants cached")
+            # Log participant names for debugging
+            for p in self.participants_cache:
+                if isinstance(p, dict):
+                    logger.info(f"  Participant: {p.get('name')} id={p.get('id')} handle={p.get('handle')}")
         except Exception as e:
             logger.warning(f"[{self.name}] Participants fetch failed: {e}")
 
@@ -217,7 +263,7 @@ class BasePollingAgent:
             ""
         )
 
-        # FIXED: Check SQLite dedup (not global set)
+        # FIXED: Check per-agent SQLite dedup (not global set)
         if message_id and self._is_processed(message_id):
             logger.info(f"[{self.name}] Skipping already-processed: {message_id}")
             return
@@ -244,7 +290,7 @@ class BasePollingAgent:
 
         logger.info(f"[{self.name}] Message id={message_id} from_id={sender_id} my_id={self.my_id} content={content[:80]}")
 
-        # Skip own messages — check by ID AND name
+        # Skip own messages
         is_own = False
         if self.my_id and sender_id and sender_id == self.my_id:
             is_own = True
@@ -285,7 +331,7 @@ class BasePollingAgent:
             self.history.append({"role": "assistant", "content": reply})
             logger.info(f"[{self.name}] LLM reply: {reply[:150]}")
 
-            # Extract mentions
+            # FIXED: Extract mentions with improved matching
             mentions = extract_mentions(reply, self.participants_cache)
             logger.info(f"[{self.name}] Mentions found: {[m['name'] for m in mentions]}")
 
