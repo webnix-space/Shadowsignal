@@ -15,7 +15,7 @@ FEATHERLESS_BASE = "https://api.featherless.ai/v1"
 
 class BasePollingAgent:
     """
-    FIXED: Proper X-API-Key auth for Band.ai Agent API.
+    FIXED: Band API uses "body" field (not "content") for message text.
     Includes deduplication, error handling, backoff, and proper message flow.
     """
 
@@ -57,7 +57,7 @@ class BasePollingAgent:
         # ─── ERROR HANDLING STATE ───
         self.consecutive_errors = 0
         self.max_backoff = 60
-        self.max_retries = 2  # INCREASED from 1 to 2
+        self.max_retries = 2
 
         # ─── WORKFLOW STATE ───
         self.last_reply_id = None
@@ -134,7 +134,8 @@ class BasePollingAgent:
 
                 # DEBUG: Log non-2xx responses for diagnostics
                 if res.status_code >= 400:
-                    print(f"[{self.name}] Band API {method} {endpoint} → HTTP {res.status_code}: {res.text[:300]}")
+                    body_preview = res.text[:300] if res.text else "(empty body)"
+                    print(f"[{self.name}] Band API {method} {endpoint} → HTTP {res.status_code}: {body_preview}")
 
                 if res.status_code >= 500:
                     if attempt < self.max_retries:
@@ -152,6 +153,11 @@ class BasePollingAgent:
 
                 if res.status_code == 404:
                     print(f"[{self.name}] NOT FOUND: {endpoint} — check room_id or endpoint path")
+                    return None
+
+                if res.status_code == 422:
+                    # Validation error — payload schema wrong
+                    print(f"[{self.name}] VALIDATION ERROR: 422 — Check payload field names (use 'body' not 'content')")
                     return None
 
                 if res.status_code >= 400:
@@ -191,7 +197,14 @@ class BasePollingAgent:
         return []
 
     def _send_reply(self, content: str) -> Optional[Dict]:
-        payload = {"content": content, "type": "text"}
+        """
+        FIXED: Band API expects "body" (not "content") for message text.
+        Also includes "type": "text" as required.
+        """
+        payload = {
+            "body": content,      # ← FIXED: was "content", now "body"
+            "type": "text",
+        }
         return self._band_request(
             "POST", f"/agent/chats/{self.room_id}/messages", json=payload
         )
