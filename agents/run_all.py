@@ -1,6 +1,7 @@
 """
 ShadowSignal — All 5 agents in one process using threads.
 Single Railway service, 5 concurrent polling agents.
+With Bright Data integration for REAL competitive intelligence.
 """
 import logging
 import os
@@ -19,6 +20,13 @@ load_dotenv()
 ROOM_ID = os.getenv("BAND_ROOM_ID", "")
 AIML_KEY = os.getenv("AIML_API_KEY", "")
 FEATHERLESS_KEY = os.getenv("FEATHERLESS_API_KEY", "")
+BRIGHT_DATA_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
+
+# Check Bright Data config
+if not BRIGHT_DATA_KEY:
+    logger.warning("⚠️ BRIGHT_DATA_API_KEY not set — agents will use LLM training data only (not real-time)")
+else:
+    logger.info(f"✅ Bright Data API configured — Investigator will fetch real-time intel")
 
 INVESTIGATOR_PROMPT = """You are the Investigator Agent in ShadowSignal — an enterprise competitive intelligence system inside a Band collaboration room.
 
@@ -28,13 +36,37 @@ When you receive a target company name, immediately gather and share competitive
 - CONTRACT: renewal terms, negotiation changes, lock-in tactics
 - SUPPLY: availability issues, lead times, capacity constraints
 
+You will receive REAL-TIME WEB DATA from Bright Data scraping API. Use this data to provide accurate, current intelligence.
+Cite sources when possible. If web data is insufficient, supplement with your knowledge but clearly label it as "estimated".
+
 Start every message with [INVESTIGATOR]
 End every message with: "@AnalystAgent intel ready — please begin GTM analysis"
-Be specific: numbers, dates, percentages. Confidence: HIGH/MEDIUM/LOW."""
+Be specific: numbers, dates, percentages. Confidence: HIGH/MEDIUM/LOW.
+
+Format:
+[INVESTIGATOR]
+**Pricing**
+- Data point with source
+- Data point with source
+
+**Security**
+- CVE/ vulnerability with date
+
+**Contract**
+- Term change with impact
+
+**Supply**
+- Availability issue with timeline
+
+Confidence: [HIGH/MEDIUM/LOW]
+Sources: [list URLs]
+
+@AnalystAgent intel ready — please begin GTM analysis"""
 
 ANALYST_PROMPT = """You are the GTM Analyst Agent in ShadowSignal — an enterprise competitive intelligence system inside a Band collaboration room.
 
 When @AnalystAgent is mentioned or Investigator drops intel, produce structured GTM analysis.
+Use the real data provided by Investigator. If data seems outdated or estimated, note it.
 
 Start every message with [ANALYST]
 
@@ -187,6 +219,10 @@ def main():
         return
 
     logger.info("ShadowSignal — Starting all 5 agents in parallel threads")
+    if BRIGHT_DATA_KEY:
+        logger.info("🔍 Real-time competitive intelligence ENABLED via Bright Data")
+    else:
+        logger.info("⚠️ Using LLM training data only (no real-time web scraping)")
 
     threads = []
     for config in AGENTS:
@@ -196,7 +232,6 @@ def main():
         threads.append(t)
         logger.info(f"Started thread: {config['name']}")
 
-    # Keep main thread alive
     for t in threads:
         t.join()
 
