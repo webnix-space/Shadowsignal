@@ -5,7 +5,9 @@ from typing import Optional, Dict, Any, List
 
 class BandClient:
     """
-    FIXED: Uses X-API-Key header for Band.ai authentication.
+    FIXED: Uses X-API-Key header for Band.ai Agent API authentication.
+    Confirmed from official docs: Agent API uses X-API-Key header.
+    Includes full error logging and all agent endpoints.
     """
 
     def __init__(self, api_key: str, base_url: str = "https://app.band.ai/api/v1"):
@@ -35,10 +37,26 @@ class BandClient:
                     **kwargs
                 )
 
+                # DEBUG: Log all non-2xx for diagnostics
+                if response.status_code >= 400:
+                    print(f"[BandClient] {method} {endpoint} → HTTP {response.status_code}: {response.text[:300]}")
+
                 if response.status_code >= 500:
                     if attempt < self.max_retries:
                         time.sleep(2 ** attempt)
                         continue
+                    return None
+
+                if response.status_code == 401:
+                    print(f"[BandClient] AUTH FAILED: 401 — Invalid X-API-Key. Check your agent API key.")
+                    return None
+
+                if response.status_code == 403:
+                    print(f"[BandClient] AUTH FAILED: 403 — Agent lacks permission for this operation.")
+                    return None
+
+                if response.status_code == 404:
+                    print(f"[BandClient] NOT FOUND: {endpoint}")
                     return None
 
                 if response.status_code >= 400:
@@ -50,21 +68,37 @@ class BandClient:
                 try:
                     return response.json()
                 except json.JSONDecodeError:
+                    print(f"[BandClient] JSON decode error: {response.text[:200]}")
                     return None
 
-            except requests.exceptions.RequestException:
+            except requests.exceptions.Timeout:
+                print(f"[BandClient] Timeout on {method} {endpoint}")
                 if attempt < self.max_retries:
                     time.sleep(2 ** attempt)
                     continue
                 return None
-            except Exception:
+            except requests.exceptions.RequestException as e:
+                print(f"[BandClient] Request error: {e}")
+                if attempt < self.max_retries:
+                    time.sleep(2 ** attempt)
+                    continue
+                return None
+            except Exception as e:
+                print(f"[BandClient] Unexpected error: {e}")
                 return None
 
         return None
 
+    # ─── Agent Identity ───
     def get_me(self) -> Optional[Dict]:
+        """Validate connection and get agent identity."""
         return self._request("GET", "/agent/me")
 
+    def get_peers(self) -> Optional[Dict]:
+        """Get agents this agent can recruit."""
+        return self._request("GET", "/agent/peers")
+
+    # ─── Chat/Room Management ───
     def get_chats(self) -> Optional[Dict]:
         return self._request("GET", "/agent/chats")
 
@@ -81,6 +115,12 @@ class BandClient:
         payload = {"content": content, "type": "text"}
         return self._request("POST", f"/agent/chats/{chat_id}/messages", json=payload)
 
+    def send_event(self, chat_id: str, event_type: str, data: Dict) -> Optional[Dict]:
+        """Send tool calls, thoughts, errors (informational records)."""
+        payload = {"type": event_type, "data": data}
+        return self._request("POST", f"/agent/chats/{chat_id}/events", json=payload)
+
+    # ─── Message Lifecycle ───
     def mark_processing(self, chat_id: str, message_id: str) -> bool:
         return self._request(
             "POST", f"/agent/chats/{chat_id}/messages/{message_id}/processing"
@@ -92,16 +132,26 @@ class BandClient:
         ) is not None
 
     def mark_failed(self, chat_id: str, message_id: str, reason: str = "") -> bool:
+        payload = {"reason": reason} if reason else None
         return self._request(
             "POST", f"/agent/chats/{chat_id}/messages/{message_id}/failed",
-            json={"reason": reason} if reason else None
+            json=payload
         ) is not None
 
+    # ─── Advanced ───
     def get_next_message(self, chat_id: str) -> Optional[Dict]:
+        """Get next unprocessed message (mention-filtered)."""
         result = self._request("GET", f"/agent/chats/{chat_id}/messages/next")
         if result and isinstance(result, dict):
             return result.get("data", result)
         return None
+
+    def get_context(self, chat_id: str) -> list:
+        """Get messages agent sent OR was mentioned in (for reconnection)."""
+        result = self._request("GET", f"/agent/chats/{chat_id}/context")
+        if result and isinstance(result, dict):
+            return result.get("messages", []) or result.get("data", [])
+        return []
 
     def get_events(self, chat_id: str) -> list:
         result = self._request("GET", f"/agent/chats/{chat_id}/events")
@@ -114,3 +164,10 @@ class BandClient:
         if result and isinstance(result, dict):
             return result.get("members", []) or result.get("data", [])
         return []
+
+    def add_participant(self, chat_id: str, participant_id: str) -> Optional[Dict]:
+        """Recruit a peer agent into a chat room."""
+        return self._request(
+            "POST", f"/agent/chats/{chat_id}/participants",
+            json={"participant_id": participant_id}
+        )
