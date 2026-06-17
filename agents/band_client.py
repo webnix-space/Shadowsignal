@@ -52,13 +52,13 @@ class BandClient:
                 "mentions": mentions or []
             }
         }
+        logger.info(f"[BandClient] Sending message with {len(mentions or [])} mentions")
         r = requests.post(
             f"{BAND_BASE}/chats/{chat_id}/messages",
             headers=self.headers,
             json=payload,
             timeout=15,
         )
-        # DEBUG: log errors
         if r.status_code >= 400:
             logger.error(f"[BandClient] send_message failed: {r.status_code} {r.text[:300]}")
         r.raise_for_status()
