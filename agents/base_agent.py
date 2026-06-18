@@ -95,7 +95,7 @@ def safe_get(obj, *keys, default=None):
 
 
 def extract_mentions(content: str, participants: list, self_id: str = "", self_name: str = "") -> list:
-    """Extract mentions from content, excluding self to avoid cannot_mention_self error."""
+    """Extract mentions from content, excluding self and human users."""
     if not content or not participants:
         return []
     mentions = []
@@ -115,10 +115,19 @@ def extract_mentions(content: str, participants: list, self_id: str = "", self_n
         if self_name and name and name.lower() == self_name.lower():
             continue
 
+        # SKIP HUMAN USERS - only mention other ShadowSignal agents
+        if name and not name.startswith("ShadowSignal"):
+            continue
+
+        # Match by: @AgentName, @agentname, @agent_name, or just agentname with @ in content
         checks = []
         if name:
+            # @ShadowSignal Analyst
             checks.append(f"@{name}".lower() in content_lower)
-            checks.append(name.lower() in content_lower and "@" in content)
+            # @shadowsignalanalyst (no spaces)
+            checks.append(f"@{name.lower().replace(' ', '')}" in content_lower)
+            # @shadowsignal_analyst (underscores)
+            checks.append(f"@{name.lower().replace(' ', '_')}" in content_lower)
         if handle:
             checks.append(f"@{handle}".lower() in content_lower)
         if any(checks):
@@ -249,13 +258,22 @@ class BasePollingAgent:
         return words[0] if words else cleaned
 
     def _get_next_agent(self) -> str:
-        """Get the next agent in the pipeline for programmatic @mention injection."""
+        """Get the next agent handle (no spaces) for @mention injection text."""
         try:
             my_index = AGENT_ORDER.index(self.name)
             if my_index + 1 < len(AGENT_ORDER):
                 next_name = AGENT_ORDER[my_index + 1]
-                # Return handle format (lowercase, hyphenated)
                 return next_name.lower().replace(" ", "")
+        except ValueError:
+            pass
+        return ""
+
+    def _get_next_agent_full_name(self) -> str:
+        """Get the next agent's full display name (with spaces)."""
+        try:
+            my_index = AGENT_ORDER.index(self.name)
+            if my_index + 1 < len(AGENT_ORDER):
+                return AGENT_ORDER[my_index + 1]
         except ValueError:
             pass
         return ""
@@ -408,34 +426,34 @@ class BasePollingAgent:
 
             # PROGRAMMATIC MENTION INJECTION: Ensure chain continues by forcing @mention
             # of the next agent in the pipeline if not already present
-            next_agent = self._get_next_agent()
-            if next_agent and next_agent.lower() not in reply.lower():
-                reply = reply.rstrip() + f"\n\n@{next_agent} — please proceed with analysis."
-                logger.info(f"[{self.name}] Injected @mention for {next_agent}")
+            next_agent_handle = self._get_next_agent()
+            next_agent_full = self._get_next_agent_full_name()
+            if next_agent_handle and next_agent_handle.lower() not in reply.lower():
+                reply = reply.rstrip() + f"\n\n@{next_agent_handle} — please proceed with analysis."
+                logger.info(f"[{self.name}] Injected @mention for {next_agent_handle}")
                 # Re-extract mentions after injection
                 mentions = extract_mentions(reply, self.participants_cache, self_id=self.my_id, self_name=self.my_name)
 
-            # EMERGENCY: If still no mentions, pick ANY other participant to satisfy Band's minItems: 1
+            # EMERGENCY: If still no mentions, find next ShadowSignal agent in pipeline
             if not mentions and self.participants_cache:
-                for p in self.participants_cache:
-                    if not isinstance(p, dict):
-                        continue
-                    agent_id = p.get("id") or safe_get(p, "agent", "id")
-                    name = p.get("name", "")
-                    if not agent_id or not name:
-                        continue
-                    # Skip self
-                    if self.my_id and agent_id == self.my_id:
-                        continue
-                    if self.my_name and name.lower() == self.my_name.lower():
-                        continue
-                    mentions.append({
-                        "id": agent_id,
-                        "name": name,
-                        "handle": p.get("handle", name.lower().replace(" ", ""))
-                    })
-                    logger.info(f"[{self.name}] Emergency mention added: {name}")
-                    break
+                next_agent_name = self._get_next_agent_full_name()
+                if next_agent_name:
+                    for p in self.participants_cache:
+                        if not isinstance(p, dict):
+                            continue
+                        agent_id = p.get("id") or safe_get(p, "agent", "id")
+                        name = p.get("name", "")
+                        if not agent_id or not name:
+                            continue
+                        # Match by full name (with spaces)
+                        if name.lower() == next_agent_name.lower():
+                            mentions.append({
+                                "id": agent_id,
+                                "name": name,
+                                "handle": p.get("handle", name.lower().replace(" ", ""))
+                            })
+                            logger.info(f"[{self.name}] Pipeline mention added: {name}")
+                            break
 
             sent = False
             if mentions:
