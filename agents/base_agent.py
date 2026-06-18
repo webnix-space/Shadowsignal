@@ -237,6 +237,18 @@ class BasePollingAgent:
         words = [w for w in cleaned.split() if len(w) > 2]
         return words[0] if words else cleaned
 
+    def _get_next_agent(self) -> str:
+        """Get the next agent in the pipeline for programmatic @mention injection."""
+        try:
+            my_index = AGENT_ORDER.index(self.name)
+            if my_index + 1 < len(AGENT_ORDER):
+                next_name = AGENT_ORDER[my_index + 1]
+                # Return handle format (lowercase, hyphenated)
+                return next_name.lower().replace(" ", "")
+        except ValueError:
+            pass
+        return ""
+
     def run(self):
         try:
             me = self.client.me()
@@ -383,6 +395,15 @@ class BasePollingAgent:
             mentions = extract_mentions(reply, self.participants_cache)
             logger.info(f"[{self.name}] Mentions found: {[m['name'] for m in mentions]}")
 
+            # PROGRAMMATIC MENTION INJECTION: Ensure chain continues by forcing @mention
+            # of the next agent in the pipeline if not already present
+            next_agent = self._get_next_agent()
+            if next_agent and next_agent not in reply:
+                reply = reply.rstrip() + f"\n\n@{next_agent} — please proceed with analysis."
+                logger.info(f"[{self.name}] Injected @mention for {next_agent}")
+                # Re-extract mentions after injection
+                mentions = extract_mentions(reply, self.participants_cache)
+
             sent = False
             if mentions:
                 try:
@@ -392,10 +413,20 @@ class BasePollingAgent:
                 except Exception as e:
                     logger.error(f"[{self.name}] send_message failed: {e}")
 
+            # FALLBACK: Send as plain message (not thought) so other agents can see it
+            if not sent:
+                try:
+                    self.client.send_message(self.room_id, reply, [])
+                    logger.info(f"[{self.name}] Sent message without mentions")
+                    sent = True
+                except Exception as e:
+                    logger.error(f"[{self.name}] send_message (no mentions) failed: {e}")
+
+            # LAST RESORT: Post as thought only if everything else fails
             if not sent:
                 try:
                     self.client.post_event(self.room_id, reply[:1000], message_type="thought")
-                    logger.info(f"[{self.name}] Posted as event")
+                    logger.info(f"[{self.name}] Posted as event (last resort)")
                 except Exception as e:
                     logger.error(f"[{self.name}] post_event failed: {e}")
 
