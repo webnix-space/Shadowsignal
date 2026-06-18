@@ -1,10 +1,11 @@
 """
 Base polling agent using Band REST API + Bright Data for REAL competitive intelligence.
 FIXED: Per-agent SQLite deduplication + LOOP DETECTION + REAL DATA via Bright Data.
-FIXED: F-string syntax error (line 325) — replaced with proper string concatenation.
+FIXED: F-string syntax error — replaced with proper string concatenation.
 FIXED: Loop detection — made triggers agent-specific to avoid blocking upstream messages.
-FIXED: Added retry with exponential backoff for LLM calls.
+FIXED: Added retry with exponential backoff for LLM calls AND Band API calls.
 FIXED: SQLite DB path uses persistent storage if available.
+FIXED: Bright Data integration now uses proper SERP API with result parsing.
 """
 import logging
 import os
@@ -25,11 +26,10 @@ AIML_BASE = "https://api.aimlapi.com/v1"
 FEATHERLESS_BASE = "https://api.featherless.ai/v1"
 
 # Loop detection triggers — made AGENT-SPECIFIC to avoid blocking upstream messages
-# Only skip if the exact agent posted the completion phrase
 LOOP_TRIGGERS = [
     "[CODEBAND] workflow complete",
     "[CODEBAND] WORKFLOW BLOCKED",
-    "@InvestigatorAgent \u2705 workflow complete",
+    "@InvestigatorAgent ✅ workflow complete",
     "@InvestigatorAgent intel ready",
     "@AnalystAgent analysis complete",
     "@StrategistAgent strategies ready",
@@ -70,7 +70,7 @@ def call_llm(messages: list, api_key: str, model: str, base_url: str, max_retrie
             logger.warning(f"[LLM] Timeout on attempt {attempt + 1}/{max_retries}, retrying in {wait}s...")
             time.sleep(wait)
         except requests.exceptions.HTTPError as e:
-            if resp.status_code == 429:  # Rate limit
+            if resp.status_code == 429:
                 wait = 2 ** attempt + 1
                 logger.warning(f"[LLM] Rate limited (429), retrying in {wait}s...")
                 time.sleep(wait)
@@ -109,24 +109,18 @@ def extract_mentions(content: str, participants: list, self_id: str = "", self_n
         if not agent_id:
             continue
 
-        # SKIP SELF - prevent cannot_mention_self error
         if self_id and agent_id == self_id:
             continue
         if self_name and name and name.lower() == self_name.lower():
             continue
 
-        # SKIP HUMAN USERS - only mention other ShadowSignal agents
         if name and not name.startswith("ShadowSignal"):
             continue
 
-        # Match by: @AgentName, @agentname, @agent_name, or just agentname with @ in content
         checks = []
         if name:
-            # @ShadowSignal Analyst
             checks.append(f"@{name}".lower() in content_lower)
-            # @shadowsignalanalyst (no spaces)
             checks.append(f"@{name.lower().replace(' ', '')}" in content_lower)
-            # @shadowsignal_analyst (underscores)
             checks.append(f"@{name.lower().replace(' ', '_')}" in content_lower)
         if handle:
             checks.append(f"@{handle}".lower() in content_lower)
@@ -162,10 +156,8 @@ class BasePollingAgent:
         self.my_name = name
         self.participants_cache = []
 
-        # Bright Data for real-time intel
         self.bright_data = BrightDataClient()
 
-        # Use persistent storage if available, fallback to /tmp
         data_dir = os.getenv("DATA_DIR", "/tmp")
         os.makedirs(data_dir, exist_ok=True)
         safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", name.lower())
@@ -231,10 +223,8 @@ class BasePollingAgent:
         """Detect loop messages — only skip if sender is downstream AND content contains completion phrase."""
         content_lower = content.lower()
 
-        # Check for specific completion phrases from downstream agents
         for trigger in LOOP_TRIGGERS:
             if trigger.lower() in content_lower:
-                # Only block if sender is downstream in the chain
                 try:
                     my_index = AGENT_ORDER.index(self.name)
                     sender_index = AGENT_ORDER.index(sender_name)
@@ -247,18 +237,15 @@ class BasePollingAgent:
         return False
 
     def _extract_company_name(self, content: str) -> str:
-        """Extract company name from user query like \"analyze nvidia\" or \"analyze google\"."""
-        # Remove @mentions (handles with brackets like @[uuid] or @AgentName)
+        """Extract company name from user query."""
         cleaned = re.sub(r"@\[.+?\]", "", content)
         cleaned = re.sub(r"@[A-Za-z0-9_\-]+", "", cleaned)
-        # Remove command words
         cleaned = re.sub(r"analyze|research|intel|competitive|check|review|please|can you|will you", "", cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.strip()
         words = [w for w in cleaned.split() if len(w) > 2 and w.lower() not in ["the", "this", "that", "for", "about"]]
         return words[0] if words else cleaned
 
     def _get_next_agent(self) -> str:
-        """Get the next agent handle (no spaces) for @mention injection text."""
         try:
             my_index = AGENT_ORDER.index(self.name)
             if my_index + 1 < len(AGENT_ORDER):
@@ -269,7 +256,6 @@ class BasePollingAgent:
         return ""
 
     def _get_next_agent_full_name(self) -> str:
-        """Get the next agent's full display name (with spaces)."""
         try:
             my_index = AGENT_ORDER.index(self.name)
             if my_index + 1 < len(AGENT_ORDER):
@@ -351,7 +337,6 @@ class BasePollingAgent:
 
         logger.info(f"[{self.name}] Message id={message_id} from={sender_name} content={content[:80]}")
 
-        # Skip own messages
         is_own = False
         if self.my_id and sender_id and sender_id == self.my_id:
             is_own = True
@@ -367,7 +352,6 @@ class BasePollingAgent:
                     pass
             return
 
-        # Loop detection — only skip downstream completion messages
         if self._is_loop_message(content, sender_name):
             if message_id:
                 self._mark_processed(message_id)
@@ -377,7 +361,6 @@ class BasePollingAgent:
                     pass
             return
 
-        # Mark processing
         if message_id:
             self._mark_processed(message_id)
             try:
@@ -386,18 +369,16 @@ class BasePollingAgent:
                 logger.warning(f"[{self.name}] mark_processing failed: {e}")
 
         try:
-            # Build user message with optional real-time data
             user_message = f"[{sender_name}]: {content}"
 
             # Investigator fetches real-time data via Bright Data
             if self.name == "ShadowSignal Investigator" and "analyze" in content.lower():
                 company = self._extract_company_name(content)
-                if company and self.bright_data.api_key:
+                if company and self.bright_data.enabled:
                     logger.info(f"[{self.name}] Fetching real-time intel for: {company}")
                     intel = self.bright_data.get_competitive_intel(company)
                     if intel.get("sources"):
                         intel_text = format_intel_for_llm(intel)
-                        # FIXED: Proper string concatenation with explicit newlines
                         user_message = (
                             user_message
                             + "\n\n--- REAL-TIME WEB DATA ---\n"
@@ -405,6 +386,10 @@ class BasePollingAgent:
                             + "\n--- END WEB DATA ---"
                         )
                         logger.info(f"[{self.name}] Added {len(intel['sources'])} real sources")
+                    else:
+                        logger.warning(f"[{self.name}] No web data found for {company}, using LLM knowledge")
+                else:
+                    logger.info(f"[{self.name}] Bright Data disabled or no company extracted, using LLM knowledge only")
 
             self.history.append({"role": "user", "content": user_message})
 
@@ -424,14 +409,12 @@ class BasePollingAgent:
             mentions = extract_mentions(reply, self.participants_cache, self_id=self.my_id, self_name=self.my_name)
             logger.info(f"[{self.name}] Mentions found (self-filtered): {[m['name'] for m in mentions]}")
 
-            # PROGRAMMATIC MENTION INJECTION: Ensure chain continues by forcing @mention
-            # of the next agent in the pipeline if not already present
+            # PROGRAMMATIC MENTION INJECTION
             next_agent_handle = self._get_next_agent()
             next_agent_full = self._get_next_agent_full_name()
             if next_agent_handle and next_agent_handle.lower() not in reply.lower():
                 reply = reply.rstrip() + f"\n\n@{next_agent_handle} — please proceed with analysis."
                 logger.info(f"[{self.name}] Injected @mention for {next_agent_handle}")
-                # Re-extract mentions after injection
                 mentions = extract_mentions(reply, self.participants_cache, self_id=self.my_id, self_name=self.my_name)
 
             # EMERGENCY: If still no mentions, find next ShadowSignal agent in pipeline
@@ -445,7 +428,6 @@ class BasePollingAgent:
                         name = p.get("name", "")
                         if not agent_id or not name:
                             continue
-                        # Match by full name (with spaces)
                         if name.lower() == next_agent_name.lower():
                             mentions.append({
                                 "id": agent_id,
@@ -464,7 +446,6 @@ class BasePollingAgent:
                 except Exception as e:
                     logger.error(f"[{self.name}] send_message failed: {e}")
 
-            # LAST RESORT: Post as thought only if everything else fails
             if not sent:
                 try:
                     self.client.post_event(self.room_id, reply[:1000], message_type="thought")
