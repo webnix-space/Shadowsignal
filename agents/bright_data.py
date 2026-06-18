@@ -1,3 +1,4 @@
+import logging
 """
 Bright Data API Integration for ShadowSignal
 Provides real-time web scraping and SERP search capabilities.
@@ -207,5 +208,4 @@ def format_intel_for_llm(intel: Dict[str, Any]) -> str:
             sections.append(f"   Snippet: {item['snippet'][:200]}")
             sections.append("")
 
-    return "
-".join(sections)
+    return "\n".join(sections)
