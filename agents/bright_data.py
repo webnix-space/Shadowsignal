@@ -1,7 +1,6 @@
 """
 Bright Data API Integration for ShadowSignal
-FIXED: Correct SERP API zone name (serp_api1), auth, and payload format.
-Uses Bright Data SERP API v2 for Google search results.
+FIXED: Correct SERP API zone (serp_api1), response parsing, and fallback.
 """
 import os
 import requests
@@ -11,16 +10,10 @@ from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
-# Bright Data SERP API endpoint
 BRIGHT_DATA_API = "https://api.brightdata.com/request"
 
 
 class BrightDataClient:
-    """
-    Bright Data client for real-time competitive intelligence.
-    Uses SERP API zone 'serp_api1' for Google search results.
-    """
-
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("BRIGHT_DATA_API_KEY", "")
         self.headers = {
@@ -29,15 +22,10 @@ class BrightDataClient:
         }
 
     def search_google(self, query: str, num_results: int = 10) -> List[Dict]:
-        """
-        Search Google via Bright Data SERP API.
-        Zone: serp_api1
-        """
         if not self.api_key:
-            logger.warning("[BrightData] No API key configured")
+            logger.warning("[BrightData] No API key")
             return []
 
-        # EXACT payload from Bright Data dashboard (Screenshot 1)
         payload = {
             "zone": "serp_api1",
             "url": f"https://www.google.com/search?q={requests.utils.quote(query)}&num={num_results}",
@@ -46,55 +34,69 @@ class BrightDataClient:
         }
 
         try:
-            resp = requests.post(
-                BRIGHT_DATA_API,
-                headers=self.headers,
-                json=payload,
-                timeout=60,
-            )
+            resp = requests.post(BRIGHT_DATA_API, headers=self.headers, json=payload, timeout=60)
 
-            # Bright Data SERP API returns 202 for async jobs
             if resp.status_code == 202:
-                logger.info("[BrightData] Async job submitted, polling not implemented yet")
+                logger.info("[BrightData] Async job submitted")
                 return []
 
             resp.raise_for_status()
             data = resp.json()
 
-            # Parse response based on data_format=parsed
+            # Log raw response for debugging
+            logger.debug(f"[BrightData] Raw response keys: {list(data.keys()) if isinstance(data, dict) else 'not dict'}")
+
             results = []
+            organic = []
 
-            # Try different response structures
+            # Try ALL possible response structures
             if isinstance(data, dict):
-                # Parsed format usually has nested structure
-                organic = data.get("organic", [])
-                if not organic and "results" in data:
+                # Direct organic
+                if "organic" in data and isinstance(data["organic"], list):
+                    organic = data["organic"]
+                # Nested in data
+                elif "data" in data and isinstance(data["data"], dict):
+                    if "organic" in data["data"]:
+                        organic = data["data"]["organic"]
+                    elif "results" in data["data"]:
+                        organic = data["data"]["results"]
+                # Results key
+                elif "results" in data and isinstance(data["results"], list):
                     organic = data["results"]
-                if not organic and "data" in data and isinstance(data["data"], dict):
-                    organic = data["data"].get("organic", [])
+                # Search results key
+                elif "search_results" in data and isinstance(data["search_results"], list):
+                    organic = data["search_results"]
+                # Try to find any list that looks like search results
+                else:
+                    for key, val in data.items():
+                        if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
+                            if any(k in val[0] for k in ["title", "link", "url", "snippet", "description"]):
+                                organic = val
+                                logger.info(f"[BrightData] Found results in key: {key}")
+                                break
 
-                for item in organic[:num_results]:
-                    if not isinstance(item, dict):
-                        continue
+            for item in organic[:num_results]:
+                if not isinstance(item, dict):
+                    continue
+                title = item.get("title", "")
+                url = item.get("link", item.get("url", ""))
+                snippet = item.get("snippet", item.get("description", item.get("body", "")))
+                if title or url:  # Only add if we have at least title or URL
                     results.append({
-                        "title": item.get("title", ""),
-                        "url": item.get("link", item.get("url", "")),
-                        "snippet": item.get("snippet", item.get("description", "")),
+                        "title": title,
+                        "url": url,
+                        "snippet": snippet,
                         "rank": item.get("rank", 0),
                     })
 
-            logger.info(f"[BrightData] Got {len(results)} results for: {query[:50]}")
+            logger.info(f"[BrightData] Parsed {len(results)} results for: {query[:50]}")
             return results
 
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"[BrightData] HTTP {resp.status_code}: {resp.text[:300]}")
-            return []
         except Exception as e:
-            logger.error(f"[BrightData] Search error: {e}")
+            logger.error(f"[BrightData] Error: {e}")
             return []
 
     def get_competitive_intel(self, company_name: str) -> Dict[str, Any]:
-        """Gather competitive intelligence with isolated searches."""
         intel = {
             "company": company_name,
             "pricing": [],
@@ -126,11 +128,20 @@ class BrightDataClient:
                 logger.warning(f"[BrightData] {category} search failed: {e}")
 
         intel["sources"] = list(set(intel["sources"]))[:10]
+
+        # FALLBACK: If no web data at all, add a marker so LLM knows
+        total_results = sum(len(intel[k]) for k in ["pricing", "security", "news", "reviews"])
+        if total_results == 0:
+            logger.warning(f"[BrightData] No real-time data available for {company_name}")
+            intel["_no_data"] = True
+
         return intel
 
 
 def format_intel_for_llm(intel: Dict[str, Any]) -> str:
-    """Format intel into structured prompt for LLM."""
+    if intel.get("_no_data"):
+        return f"[NOTE: No real-time web data available for {intel['company']}. Using general knowledge.]"
+
     sections = []
     sections.append(f"# Real-Time Competitive Intelligence: {intel['company']}")
     if intel["sources"]:
