@@ -1,24 +1,24 @@
-import logging
 """
 Bright Data API Integration for ShadowSignal
-Provides real-time web scraping and SERP search capabilities.
+FIXED: Correct SERP API zone name (serp_api1), auth, and payload format.
+Uses Bright Data SERP API v2 for Google search results.
 """
 import os
 import requests
 import json
+import logging
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
-# Bright Data API endpoints
-BRIGHT_DATA_SERP_API = "https://api.brightdata.com/request"
-BRIGHT_DATA_SCRAPER_API = "https://api.brightdata.com/request"
+# Bright Data SERP API endpoint
+BRIGHT_DATA_API = "https://api.brightdata.com/request"
 
 
 class BrightDataClient:
     """
     Bright Data client for real-time competitive intelligence.
-    Uses SERP API for search results and Web Scraper API for page extraction.
+    Uses SERP API zone 'serp_api1' for Google search results.
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -28,81 +28,73 @@ class BrightDataClient:
             "Content-Type": "application/json",
         }
 
-    def search_google(self, query: str, num_results: int = 10, geo: str = "us") -> List[Dict]:
+    def search_google(self, query: str, num_results: int = 10) -> List[Dict]:
         """
         Search Google via Bright Data SERP API.
-        Returns structured search results with title, URL, snippet.
+        Zone: serp_api1
         """
         if not self.api_key:
-            logger.warning("[BrightData] No API key configured, returning empty results")
+            logger.warning("[BrightData] No API key configured")
             return []
 
+        # EXACT payload from Bright Data dashboard (Screenshot 1)
         payload = {
-            "zone": "serp_api",  # Your SERP API zone name
+            "zone": "serp_api1",
             "url": f"https://www.google.com/search?q={requests.utils.quote(query)}&num={num_results}",
             "format": "json",
-            "geo": geo,
+            "data_format": "parsed",
         }
 
         try:
             resp = requests.post(
-                BRIGHT_DATA_SERP_API,
+                BRIGHT_DATA_API,
                 headers=self.headers,
                 json=payload,
-                timeout=30,
+                timeout=60,
             )
+
+            # Bright Data SERP API returns 202 for async jobs
+            if resp.status_code == 202:
+                logger.info("[BrightData] Async job submitted, polling not implemented yet")
+                return []
+
             resp.raise_for_status()
             data = resp.json()
 
-            # Extract organic results
+            # Parse response based on data_format=parsed
             results = []
-            organic = data.get("organic", []) or data.get("results", [])
-            for item in organic[:num_results]:
-                results.append({
-                    "title": item.get("title", ""),
-                    "url": item.get("link", item.get("url", "")),
-                    "snippet": item.get("snippet", item.get("description", "")),
-                    "rank": item.get("rank", 0),
-                })
+
+            # Try different response structures
+            if isinstance(data, dict):
+                # Parsed format usually has nested structure
+                organic = data.get("organic", [])
+                if not organic and "results" in data:
+                    organic = data["results"]
+                if not organic and "data" in data and isinstance(data["data"], dict):
+                    organic = data["data"].get("organic", [])
+
+                for item in organic[:num_results]:
+                    if not isinstance(item, dict):
+                        continue
+                    results.append({
+                        "title": item.get("title", ""),
+                        "url": item.get("link", item.get("url", "")),
+                        "snippet": item.get("snippet", item.get("description", "")),
+                        "rank": item.get("rank", 0),
+                    })
+
+            logger.info(f"[BrightData] Got {len(results)} results for: {query[:50]}")
             return results
 
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"[BrightData] HTTP {resp.status_code}: {resp.text[:300]}")
+            return []
         except Exception as e:
-            logger.error(f"[BrightData] Search failed: {e}")
+            logger.error(f"[BrightData] Search error: {e}")
             return []
 
-    def scrape_page(self, url: str) -> Optional[str]:
-        """
-        Scrape a specific webpage via Bright Data Web Scraper API.
-        Returns clean text content.
-        """
-        if not self.api_key:
-            return None
-
-        payload = {
-            "zone": "web_scraper",  # Your Web Scraper API zone name
-            "url": url,
-            "format": "raw",  # or "markdown" for LLM-ready format
-        }
-
-        try:
-            resp = requests.post(
-                BRIGHT_DATA_SCRAPER_API,
-                headers=self.headers,
-                json=payload,
-                timeout=30,
-            )
-            resp.raise_for_status()
-            return resp.text[:5000]  # Limit to 5K chars
-
-        except Exception as e:
-            logger.error(f"[BrightData] Scrape failed for {url}: {e}")
-            return None
-
     def get_competitive_intel(self, company_name: str) -> Dict[str, Any]:
-        """
-        Gather real-time competitive intelligence on a company.
-        Searches for: pricing, security issues, news, reviews.
-        """
+        """Gather competitive intelligence with isolated searches."""
         intel = {
             "company": company_name,
             "pricing": [],
@@ -112,100 +104,46 @@ class BrightDataClient:
             "sources": [],
         }
 
-        # 1. Search for pricing
-        pricing_results = self.search_google(
-            f"{company_name} pricing plans cost 2024 2025",
-            num_results=5
-        )
-        for r in pricing_results:
-            intel["pricing"].append({
-                "title": r["title"],
-                "url": r["url"],
-                "snippet": r["snippet"],
-            })
-            intel["sources"].append(r["url"])
+        searches = [
+            ("pricing", f"{company_name} pricing plans cost 2024 2025"),
+            ("security", f"{company_name} CVE vulnerability security issue 2024"),
+            ("news", f"{company_name} news announcement 2024 2025"),
+            ("reviews", f"{company_name} reviews G2 Capterra customer feedback"),
+        ]
 
-        # 2. Search for security/CVEs
-        security_results = self.search_google(
-            f"{company_name} CVE vulnerability security issue 2024",
-            num_results=5
-        )
-        for r in security_results:
-            intel["security"].append({
-                "title": r["title"],
-                "url": r["url"],
-                "snippet": r["snippet"],
-            })
-            intel["sources"].append(r["url"])
+        for category, query in searches:
+            try:
+                results = self.search_google(query, num_results=5)
+                for r in results:
+                    intel[category].append({
+                        "title": r["title"],
+                        "url": r["url"],
+                        "snippet": r["snippet"],
+                    })
+                    if r["url"]:
+                        intel["sources"].append(r["url"])
+            except Exception as e:
+                logger.warning(f"[BrightData] {category} search failed: {e}")
 
-        # 3. Search for recent news
-        news_results = self.search_google(
-            f"{company_name} news announcement 2024 2025",
-            num_results=5
-        )
-        for r in news_results:
-            intel["news"].append({
-                "title": r["title"],
-                "url": r["url"],
-                "snippet": r["snippet"],
-            })
-            intel["sources"].append(r["url"])
-
-        # 4. Search for reviews
-        review_results = self.search_google(
-            f"{company_name} reviews G2 Capterra customer feedback",
-            num_results=3
-        )
-        for r in review_results:
-            intel["reviews"].append({
-                "title": r["title"],
-                "url": r["url"],
-                "snippet": r["snippet"],
-            })
-            intel["sources"].append(r["url"])
-
+        intel["sources"] = list(set(intel["sources"]))[:10]
         return intel
 
 
 def format_intel_for_llm(intel: Dict[str, Any]) -> str:
-    """
-    Format Bright Data intel into a structured prompt for the LLM.
-    """
+    """Format intel into structured prompt for LLM."""
     sections = []
     sections.append(f"# Real-Time Competitive Intelligence: {intel['company']}")
-    sections.append(f"Sources: {', '.join(set(intel['sources'][:10]))}")
+    if intel["sources"]:
+        sections.append(f"Sources: {', '.join(intel['sources'][:10])}")
     sections.append("")
 
-    if intel["pricing"]:
-        sections.append("## PRICING (Live Web Data)")
-        for i, item in enumerate(intel["pricing"], 1):
-            sections.append(f"{i}. {item['title']}")
-            sections.append(f"   URL: {item['url']}")
-            sections.append(f"   Snippet: {item['snippet'][:200]}")
-            sections.append("")
-
-    if intel["security"]:
-        sections.append("## SECURITY / VULNERABILITIES (Live Web Data)")
-        for i, item in enumerate(intel["security"], 1):
-            sections.append(f"{i}. {item['title']}")
-            sections.append(f"   URL: {item['url']}")
-            sections.append(f"   Snippet: {item['snippet'][:200]}")
-            sections.append("")
-
-    if intel["news"]:
-        sections.append("## RECENT NEWS (Live Web Data)")
-        for i, item in enumerate(intel["news"], 1):
-            sections.append(f"{i}. {item['title']}")
-            sections.append(f"   URL: {item['url']}")
-            sections.append(f"   Snippet: {item['snippet'][:200]}")
-            sections.append("")
-
-    if intel["reviews"]:
-        sections.append("## CUSTOMER REVIEWS (Live Web Data)")
-        for i, item in enumerate(intel["reviews"], 1):
-            sections.append(f"{i}. {item['title']}")
-            sections.append(f"   URL: {item['url']}")
-            sections.append(f"   Snippet: {item['snippet'][:200]}")
-            sections.append("")
+    for category in ["pricing", "security", "news", "reviews"]:
+        if intel[category]:
+            sections.append(f"## {category.upper()} (Live Web Data)")
+            for i, item in enumerate(intel[category], 1):
+                sections.append(f"{i}. {item['title']}")
+                sections.append(f"   URL: {item['url']}")
+                sections.append(f"   Snippet: {item['snippet'][:200]}")
+                sections.append("")
 
     return "\n".join(sections)
