@@ -1,5 +1,27 @@
 {
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
-  ]
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "api/index.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
+    }
+  ],
+  "env": {
+    "BRIGHT_DATA_API_KEY": "@bright_data_api_key",
+    "BRIGHT_DATA_ZONE": "@bright_data_zone",
+    "AIML_API_KEY": "@aiml_api_key",
+    "FEATHERLESS_API_KEY": "@featherless_api_key",
+    "BAND_API_KEY": "@band_api_key",
+    "BAND_ROOM_ID": "@band_room_id"
+  }
 }
