@@ -1,160 +1,185 @@
 """
-Bright Data API Integration for ShadowSignal
-FIXED: Correct SERP API zone (serp_api1), response parsing, and fallback.
+Bright Data Client for ShadowSignal
+Supports both SERP API (for search) and Web Unlocker (for direct scraping).
+Uses proper Bright Data REST API with Bearer auth.
 """
+import logging
 import os
 import requests
-import json
-import logging
-from typing import Optional, Dict, Any, List
+import re
 
 logger = logging.getLogger(__name__)
 
-BRIGHT_DATA_API = "https://api.brightdata.com/request"
+BRIGHT_DATA_BASE = "https://api.brightdata.com"
 
 
 class BrightDataClient:
-    def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.getenv("BRIGHT_DATA_API_KEY", "")
-        self.headers = {
+    def __init__(self):
+        self.api_key = os.getenv("BRIGHT_DATA_API_KEY", "").strip()
+        self.zone = os.getenv("BRIGHT_DATA_ZONE", "").strip()
+        self.enabled = bool(self.api_key and self.zone)
+        if self.enabled:
+            logger.info("[BrightData] Client initialized with zone: %s", self.zone)
+        else:
+            logger.warning("[BrightData] Missing API key or zone — real-time intel disabled")
+
+    def _headers(self):
+        return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
-    def search_google(self, query: str, num_results: int = 10) -> List[Dict]:
-        if not self.api_key:
-            logger.warning("[BrightData] No API key")
-            return []
+    def search_google(self, query: str, num_results: int = 5) -> dict:
+        """Use Bright Data SERP API to search Google. Returns structured results."""
+        if not self.enabled:
+            return {"results": [], "sources": [], "error": "Bright Data not configured"}
 
+        url = f"{BRIGHT_DATA_BASE}/request"
         payload = {
-            "zone": "serp_api1",
+            "zone": self.zone,
             "url": f"https://www.google.com/search?q={requests.utils.quote(query)}&num={num_results}",
-            "format": "json",
-            "data_format": "parsed",
+            "format": "raw",
+            "data_format": "markdown",
+            "country": "us",
         }
 
         try:
-            resp = requests.post(BRIGHT_DATA_API, headers=self.headers, json=payload, timeout=60)
-
-            if resp.status_code == 202:
-                logger.info("[BrightData] Async job submitted")
-                return []
-
+            logger.info(f"[BrightData] Searching Google: {query[:60]}...")
+            resp = requests.post(url, json=payload, headers=self._headers(), timeout=30)
             resp.raise_for_status()
             data = resp.json()
 
-            # Log raw response for debugging
-            logger.debug(f"[BrightData] Raw response keys: {list(data.keys()) if isinstance(data, dict) else 'not dict'}")
+            content = data.get("content", data.get("html", data.get("body", "")))
+            results = self._parse_search_results(content, query)
 
-            results = []
-            organic = []
+            logger.info(f"[BrightData] Found {len(results)} results for: {query[:60]}")
+            return {
+                "results": results,
+                "sources": [r.get("link", "") for r in results if r.get("link")],
+                "raw": content[:2000] if isinstance(content, str) else str(content)[:2000],
+            }
+        except requests.exceptions.Timeout:
+            logger.error("[BrightData] Search timeout")
+            return {"results": [], "sources": [], "error": "timeout"}
+        except Exception as e:
+            logger.error(f"[BrightData] Search error: {e}")
+            return {"results": [], "sources": [], "error": str(e)}
 
-            # Try ALL possible response structures
-            if isinstance(data, dict):
-                # Direct organic
-                if "organic" in data and isinstance(data["organic"], list):
-                    organic = data["organic"]
-                # Nested in data
-                elif "data" in data and isinstance(data["data"], dict):
-                    if "organic" in data["data"]:
-                        organic = data["data"]["organic"]
-                    elif "results" in data["data"]:
-                        organic = data["data"]["results"]
-                # Results key
-                elif "results" in data and isinstance(data["results"], list):
-                    organic = data["results"]
-                # Search results key
-                elif "search_results" in data and isinstance(data["search_results"], list):
-                    organic = data["search_results"]
-                # Try to find any list that looks like search results
-                else:
-                    for key, val in data.items():
-                        if isinstance(val, list) and len(val) > 0 and isinstance(val[0], dict):
-                            if any(k in val[0] for k in ["title", "link", "url", "snippet", "description"]):
-                                organic = val
-                                logger.info(f"[BrightData] Found results in key: {key}")
-                                break
+    def scrape_url(self, target_url: str) -> dict:
+        """Use Bright Data Web Unlocker to scrape a specific URL."""
+        if not self.enabled:
+            return {"content": "", "sources": [], "error": "Bright Data not configured"}
 
-            for item in organic[:num_results]:
-                if not isinstance(item, dict):
-                    continue
-                title = item.get("title", "")
-                url = item.get("link", item.get("url", ""))
-                snippet = item.get("snippet", item.get("description", item.get("body", "")))
-                if title or url:  # Only add if we have at least title or URL
-                    results.append({
-                        "title": title,
-                        "url": url,
-                        "snippet": snippet,
-                        "rank": item.get("rank", 0),
-                    })
+        url = f"{BRIGHT_DATA_BASE}/request"
+        payload = {
+            "zone": self.zone,
+            "url": target_url,
+            "format": "raw",
+            "data_format": "markdown",
+            "country": "us",
+        }
 
-            logger.info(f"[BrightData] Parsed {len(results)} results for: {query[:50]}")
+        try:
+            logger.info(f"[BrightData] Scraping: {target_url[:80]}...")
+            resp = requests.post(url, json=payload, headers=self._headers(), timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            content = data.get("content", data.get("html", data.get("body", "")))
+
+            return {
+                "content": content[:5000] if isinstance(content, str) else str(content)[:5000],
+                "sources": [target_url],
+                "title": data.get("title", ""),
+            }
+        except Exception as e:
+            logger.error(f"[BrightData] Scrape error: {e}")
+            return {"content": "", "sources": [], "error": str(e)}
+
+    def _parse_search_results(self, content: str, query: str) -> list:
+        """Parse search results from Bright Data response content."""
+        results = []
+        if not content:
             return results
 
-        except Exception as e:
-            logger.error(f"[BrightData] Error: {e}")
-            return []
+        # Pattern 1: Markdown links [title](url)
+        md_links = re.findall(r'\[([^\]]+)\]\((https?://[^\)]+)\)', content)
+        for title, link in md_links[:10]:
+            desc = ""
+            idx = content.find(f"[{title}]({link})")
+            if idx >= 0:
+                after = content[idx + len(f"[{title}]({link})"):idx + 500]
+                desc_match = re.search(r'[\n\r]+([^\n\r]{50,300})', after)
+                if desc_match:
+                    desc = desc_match.group(1).strip()
+            results.append({
+                "title": title,
+                "link": link,
+                "description": desc or "No description available",
+            })
 
-    def get_competitive_intel(self, company_name: str) -> Dict[str, Any]:
+        # Pattern 2: HTML organic results
+        if not results:
+            html_links = re.findall(r'<h3[^>]*>.*?<a[^>]+href="(https?://[^"]+)"[^>]*>(.*?)</a>', content, re.DOTALL)
+            for link, title in html_links[:10]:
+                title_clean = re.sub(r'<[^>]+>', '', title).strip()
+                results.append({
+                    "title": title_clean,
+                    "link": link,
+                    "description": "Extracted from search results",
+                })
+
+        return results
+
+    def get_competitive_intel(self, company: str) -> dict:
+        """Gather multi-faceted competitive intel using Bright Data SERP API."""
+        if not self.enabled:
+            return {"sources": [], "pricing": "", "security": "", "contract": "", "supply": ""}
+
         intel = {
-            "company": company_name,
             "pricing": [],
             "security": [],
-            "news": [],
-            "reviews": [],
+            "contract": [],
+            "supply": [],
             "sources": [],
         }
 
-        searches = [
-            ("pricing", f"{company_name} pricing plans cost 2024 2025"),
-            ("security", f"{company_name} CVE vulnerability security issue 2024"),
-            ("news", f"{company_name} news announcement 2024 2025"),
-            ("reviews", f"{company_name} reviews G2 Capterra customer feedback"),
+        queries = [
+            ("pricing", f"{company} pricing plans cost enterprise 2026"),
+            ("security", f"{company} CVE vulnerability security issue 2026"),
+            ("contract", f"{company} contract terms renewal enterprise agreement 2026"),
+            ("supply", f"{company} supply chain availability lead time stock 2026"),
         ]
 
-        for category, query in searches:
+        for category, query in queries:
             try:
-                results = self.search_google(query, num_results=5)
-                for r in results:
-                    intel[category].append({
-                        "title": r["title"],
-                        "url": r["url"],
-                        "snippet": r["snippet"],
-                    })
-                    if r["url"]:
-                        intel["sources"].append(r["url"])
+                result = self.search_google(query, num_results=3)
+                items = result.get("results", [])
+                for item in items:
+                    intel[category].append(f"{item.get('title', 'N/A')}: {item.get('description', 'N/A')[:200]}")
+                    if item.get('link'):
+                        intel["sources"].append(item['link'])
             except Exception as e:
                 logger.warning(f"[BrightData] {category} search failed: {e}")
-
-        intel["sources"] = list(set(intel["sources"]))[:10]
-
-        # FALLBACK: If no web data at all, add a marker so LLM knows
-        total_results = sum(len(intel[k]) for k in ["pricing", "security", "news", "reviews"])
-        if total_results == 0:
-            logger.warning(f"[BrightData] No real-time data available for {company_name}")
-            intel["_no_data"] = True
 
         return intel
 
 
-def format_intel_for_llm(intel: Dict[str, Any]) -> str:
-    if intel.get("_no_data"):
-        return f"[NOTE: No real-time web data available for {intel['company']}. Using general knowledge.]"
-
+def format_intel_for_llm(intel: dict) -> str:
+    """Format Bright Data intel for LLM consumption."""
     sections = []
-    sections.append(f"# Real-Time Competitive Intelligence: {intel['company']}")
-    if intel["sources"]:
-        sections.append(f"Sources: {', '.join(intel['sources'][:10])}")
-    sections.append("")
 
-    for category in ["pricing", "security", "news", "reviews"]:
-        if intel[category]:
-            sections.append(f"## {category.upper()} (Live Web Data)")
-            for i, item in enumerate(intel[category], 1):
-                sections.append(f"{i}. {item['title']}")
-                sections.append(f"   URL: {item['url']}")
-                sections.append(f"   Snippet: {item['snippet'][:200]}")
-                sections.append("")
+    for category in ["pricing", "security", "contract", "supply"]:
+        items = intel.get(category, [])
+        if items:
+            sections.append(f"**{category.upper()}**")
+            for item in items:
+                sections.append(f"- {item}")
+            sections.append("")
 
-    return "\n".join(sections)
+    sources = intel.get("sources", [])
+    if sources:
+        sections.append("**Sources:**")
+        for src in set(sources)[:5]:
+            sections.append(f"- {src}")
+
+    return "\n".join(sections) if sections else "No real-time web data available."
