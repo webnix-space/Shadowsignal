@@ -1,7 +1,10 @@
 """
 Base polling agent using Band REST API + Bright Data for REAL competitive intelligence.
 FIXED: Per-agent SQLite deduplication + LOOP DETECTION + REAL DATA via Bright Data.
-FIXED: F-string syntax error (line 325).
+FIXED: F-string syntax error (line 325) — replaced with proper string concatenation.
+FIXED: Loop detection — made triggers agent-specific to avoid blocking upstream messages.
+FIXED: Added retry with exponential backoff for LLM calls.
+FIXED: SQLite DB path uses persistent storage if available.
 """
 import logging
 import os
@@ -21,15 +24,18 @@ BAND_ROOM_ID = os.getenv("BAND_ROOM_ID", "")
 AIML_BASE = "https://api.aimlapi.com/v1"
 FEATHERLESS_BASE = "https://api.featherless.ai/v1"
 
-# Loop detection triggers
+# Loop detection triggers — made AGENT-SPECIFIC to avoid blocking upstream messages
+# Only skip if the exact agent posted the completion phrase
 LOOP_TRIGGERS = [
-    "workflow complete",
-    "ready for next target",
-    "acknowledged",
-    "intel summary",
-    "analysis complete",
-    "strategies ready",
-    "cleared — please generate",
+    "[CODEBAND] workflow complete",
+    "[CODEBAND] WORKFLOW BLOCKED",
+    "@InvestigatorAgent \u2705 workflow complete",
+    "@InvestigatorAgent intel ready",
+    "@AnalystAgent analysis complete",
+    "@StrategistAgent strategies ready",
+    "@StrategistAgent revision needed",
+    "@RegulatoryAgent cleared",
+    "@RegulatoryAgent BLOCKED",
 ]
 
 AGENT_ORDER = [
@@ -41,20 +47,43 @@ AGENT_ORDER = [
 ]
 
 
-def call_llm(messages: list, api_key: str, model: str, base_url: str) -> str:
+def call_llm(messages: list, api_key: str, model: str, base_url: str, max_retries: int = 3) -> str:
+    """Call LLM with exponential backoff retry."""
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
     payload = {"model": model, "messages": messages, "max_tokens": 2048}
-    resp = requests.post(
-        f"{base_url}/chat/completions",
-        json=payload,
-        headers=headers,
-        timeout=45,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(
+                f"{base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=45,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.Timeout:
+            wait = 2 ** attempt
+            logger.warning(f"[LLM] Timeout on attempt {attempt + 1}/{max_retries}, retrying in {wait}s...")
+            time.sleep(wait)
+        except requests.exceptions.HTTPError as e:
+            if resp.status_code == 429:  # Rate limit
+                wait = 2 ** attempt + 1
+                logger.warning(f"[LLM] Rate limited (429), retrying in {wait}s...")
+                time.sleep(wait)
+            else:
+                raise
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise
+            wait = 2 ** attempt
+            logger.warning(f"[LLM] Error on attempt {attempt + 1}/{max_retries}: {e}, retrying in {wait}s...")
+            time.sleep(wait)
+
+    return "[ERROR] LLM call failed after all retries."
 
 
 def safe_get(obj, *keys, default=None):
@@ -119,8 +148,11 @@ class BasePollingAgent:
         # Bright Data for real-time intel
         self.bright_data = BrightDataClient()
 
+        # Use persistent storage if available, fallback to /tmp
+        data_dir = os.getenv("DATA_DIR", "/tmp")
+        os.makedirs(data_dir, exist_ok=True)
         safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", name.lower())
-        self.db_path = f"/tmp/shadowsignal_{safe_name}_processed.db"
+        self.db_path = f"{data_dir}/shadowsignal_{safe_name}_processed.db"
         self._init_db()
         self._processed_cache = set()
         self._load_cache()
@@ -179,23 +211,26 @@ class BasePollingAgent:
             conn.close()
 
     def _is_loop_message(self, content: str, sender_name: str) -> bool:
+        """Detect loop messages — only skip if sender is downstream AND content contains completion phrase."""
         content_lower = content.lower()
+
+        # Check for specific completion phrases from downstream agents
         for trigger in LOOP_TRIGGERS:
-            if trigger in content_lower:
-                logger.info(f"[{self.name}] LOOP DETECTED: '{trigger}' — skipping")
-                return True
-        try:
-            my_index = AGENT_ORDER.index(self.name)
-            sender_index = AGENT_ORDER.index(sender_name)
-            if sender_index > my_index:
-                logger.info(f"[{self.name}] LOOP DETECTED: downstream msg from {sender_name}")
-                return True
-        except ValueError:
-            pass
+            if trigger.lower() in content_lower:
+                # Only block if sender is downstream in the chain
+                try:
+                    my_index = AGENT_ORDER.index(self.name)
+                    sender_index = AGENT_ORDER.index(sender_name)
+                    if sender_index > my_index:
+                        logger.info(f"[{self.name}] LOOP DETECTED: downstream msg from {sender_name} with trigger \"{trigger}\" — skipping")
+                        return True
+                except ValueError:
+                    pass
+
         return False
 
     def _extract_company_name(self, content: str) -> str:
-        """Extract company name from user query like 'analyze nvidia' or 'analyze google'."""
+        """Extract company name from user query like \"analyze nvidia\" or \"analyze google\"."""
         cleaned = re.sub(r"@[A-Za-z0-9_\-]+", "", content)
         cleaned = re.sub(r"analyze|research|intel|competitive|check|review", "", cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.strip()
@@ -291,7 +326,7 @@ class BasePollingAgent:
                     pass
             return
 
-        # Loop detection
+        # Loop detection — only skip downstream completion messages
         if self._is_loop_message(content, sender_name):
             if message_id:
                 self._mark_processed(message_id)
@@ -319,14 +354,15 @@ class BasePollingAgent:
                 if company and self.bright_data.api_key:
                     logger.info(f"[{self.name}] Fetching real-time intel for: {company}")
                     intel = self.bright_data.get_competitive_intel(company)
-                    if intel["sources"]:
+                    if intel.get("sources"):
                         intel_text = format_intel_for_llm(intel)
-                        # FIXED: Use string concatenation instead of multi-line f-string
-                        user_message = user_message + "
-
---- REAL-TIME WEB DATA ---
-" + intel_text + "
---- END WEB DATA ---"
+                        # FIXED: Proper string concatenation with explicit newlines
+                        user_message = (
+                            user_message
+                            + "\n\n--- REAL-TIME WEB DATA ---\n"
+                            + intel_text
+                            + "\n--- END WEB DATA ---"
+                        )
                         logger.info(f"[{self.name}] Added {len(intel['sources'])} real sources")
 
             self.history.append({"role": "user", "content": user_message})
