@@ -94,7 +94,8 @@ def safe_get(obj, *keys, default=None):
     return obj if obj is not None else default
 
 
-def extract_mentions(content: str, participants: list) -> list:
+def extract_mentions(content: str, participants: list, self_id: str = "", self_name: str = "") -> list:
+    """Extract mentions from content, excluding self to avoid cannot_mention_self error."""
     if not content or not participants:
         return []
     mentions = []
@@ -107,6 +108,13 @@ def extract_mentions(content: str, participants: list) -> list:
         handle = p.get("handle", "")
         if not agent_id:
             continue
+
+        # SKIP SELF - prevent cannot_mention_self error
+        if self_id and agent_id == self_id:
+            continue
+        if self_name and name and name.lower() == self_name.lower():
+            continue
+
         checks = []
         if name:
             checks.append(f"@{name}".lower() in content_lower)
@@ -117,7 +125,7 @@ def extract_mentions(content: str, participants: list) -> list:
             mentions.append({
                 "id": agent_id,
                 "name": name,
-                "handle": handle or name.lower().replace(" ", "-")
+                "handle": handle or name.lower().replace(" ", "")
             })
     return mentions
 
@@ -231,10 +239,13 @@ class BasePollingAgent:
 
     def _extract_company_name(self, content: str) -> str:
         """Extract company name from user query like \"analyze nvidia\" or \"analyze google\"."""
-        cleaned = re.sub(r"@[A-Za-z0-9_\-]+", "", content)
-        cleaned = re.sub(r"analyze|research|intel|competitive|check|review", "", cleaned, flags=re.IGNORECASE)
+        # Remove @mentions (handles with brackets like @[uuid] or @AgentName)
+        cleaned = re.sub(r"@\[.+?\]", "", content)
+        cleaned = re.sub(r"@[A-Za-z0-9_\-]+", "", cleaned)
+        # Remove command words
+        cleaned = re.sub(r"analyze|research|intel|competitive|check|review|please|can you|will you", "", cleaned, flags=re.IGNORECASE)
         cleaned = cleaned.strip()
-        words = [w for w in cleaned.split() if len(w) > 2]
+        words = [w for w in cleaned.split() if len(w) > 2 and w.lower() not in ["the", "this", "that", "for", "about"]]
         return words[0] if words else cleaned
 
     def _get_next_agent(self) -> str:
@@ -392,35 +403,48 @@ class BasePollingAgent:
             self.history.append({"role": "assistant", "content": reply})
             logger.info(f"[{self.name}] LLM reply: {reply[:150]}")
 
-            mentions = extract_mentions(reply, self.participants_cache)
-            logger.info(f"[{self.name}] Mentions found: {[m['name'] for m in mentions]}")
+            mentions = extract_mentions(reply, self.participants_cache, self_id=self.my_id, self_name=self.my_name)
+            logger.info(f"[{self.name}] Mentions found (self-filtered): {[m['name'] for m in mentions]}")
 
             # PROGRAMMATIC MENTION INJECTION: Ensure chain continues by forcing @mention
             # of the next agent in the pipeline if not already present
             next_agent = self._get_next_agent()
-            if next_agent and next_agent not in reply:
+            if next_agent and next_agent.lower() not in reply.lower():
                 reply = reply.rstrip() + f"\n\n@{next_agent} — please proceed with analysis."
                 logger.info(f"[{self.name}] Injected @mention for {next_agent}")
                 # Re-extract mentions after injection
-                mentions = extract_mentions(reply, self.participants_cache)
+                mentions = extract_mentions(reply, self.participants_cache, self_id=self.my_id, self_name=self.my_name)
+
+            # EMERGENCY: If still no mentions, pick ANY other participant to satisfy Band's minItems: 1
+            if not mentions and self.participants_cache:
+                for p in self.participants_cache:
+                    if not isinstance(p, dict):
+                        continue
+                    agent_id = p.get("id") or safe_get(p, "agent", "id")
+                    name = p.get("name", "")
+                    if not agent_id or not name:
+                        continue
+                    # Skip self
+                    if self.my_id and agent_id == self.my_id:
+                        continue
+                    if self.my_name and name.lower() == self.my_name.lower():
+                        continue
+                    mentions.append({
+                        "id": agent_id,
+                        "name": name,
+                        "handle": p.get("handle", name.lower().replace(" ", ""))
+                    })
+                    logger.info(f"[{self.name}] Emergency mention added: {name}")
+                    break
 
             sent = False
             if mentions:
                 try:
                     self.client.send_message(self.room_id, reply, mentions)
-                    logger.info(f"[{self.name}] Sent message with mentions")
+                    logger.info(f"[{self.name}] Sent message with {len(mentions)} mention(s)")
                     sent = True
                 except Exception as e:
                     logger.error(f"[{self.name}] send_message failed: {e}")
-
-            # FALLBACK: Send as plain message (not thought) so other agents can see it
-            if not sent:
-                try:
-                    self.client.send_message(self.room_id, reply, [])
-                    logger.info(f"[{self.name}] Sent message without mentions")
-                    sent = True
-                except Exception as e:
-                    logger.error(f"[{self.name}] send_message (no mentions) failed: {e}")
 
             # LAST RESORT: Post as thought only if everything else fails
             if not sent:
