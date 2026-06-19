@@ -1,8 +1,7 @@
 """
 ShadowSignal Frontend-Backend Bridge — FIXED
-Connects the Vercel frontend to the Band chat agent workflow.
-FIXED: Hardcoded agent UUIDs for mentions (403 on participants endpoint)
-FIXED: Mandatory mentions array in message payload
+Uses USER API (send_my_chat_message) instead of Agent API.
+User keys send messages as the human user, not as an agent.
 """
 import os
 import requests
@@ -14,19 +13,9 @@ from typing import Optional
 
 BAND_API_KEY = os.getenv("BAND_API_KEY", "").strip()
 BAND_ROOM_ID = os.getenv("BAND_ROOM_ID", "").strip()
-BAND_BASE = "https://app.band.ai/api/v1/agent"
+BAND_BASE = "https://app.band.ai/api/v1"
 
 logger = logging.getLogger(__name__)
-
-# HARDCODED: Agent UUIDs from your Band dashboard
-# Replace these with actual UUIDs from your chat room participants
-AGENT_IDS = {
-    "ShadowSignal Investigator": os.getenv("INVESTIGATOR_ID", ""),
-    "ShadowSignal Analyst": os.getenv("ANALYST_ID", ""),
-    "ShadowSignal Strategist": os.getenv("STRATEGIST_ID", ""),
-    "ShadowSignal Regulatory": os.getenv("REGULATORY_ID", ""),
-    "ShadowSignal Codeband": os.getenv("CODEBAND_ID", ""),
-}
 
 
 class BandChatBridge:
@@ -46,41 +35,18 @@ class BandChatBridge:
             "ledger": [],
         }
 
-    def _build_mention(self, agent_name: str) -> Optional[dict]:
-        """Build mention object from hardcoded agent IDs."""
-        agent_id = AGENT_IDS.get(agent_name, "")
-        if not agent_id:
-            logger.error(f"[Bridge] No UUID configured for agent: {agent_name}")
-            return None
-        
-        # Derive handle from name (lowercase, hyphenated)
-        handle = agent_name.lower().replace(" ", "-")
-        
-        return {
-            "id": agent_id,
-            "name": agent_name,
-            "handle": handle
-        }
-
-    def _send_message(self, content: str, target_agent: str = "ShadowSignal Investigator") -> dict:
+    def _send_message(self, content: str, recipients: str = "ShadowSignal Investigator") -> dict:
         """
-        FIXED: Uses correct Band.ai Agent API format with mandatory mentions.
-        Payload: {"message": {"content": "...", "mentions": [{"id": "uuid", "name": "...", "handle": "..."}]}}
+        FIXED: Uses USER API endpoint /chats/{id}/messages with send_my_chat_message format.
+        Payload: {"content": "...", "recipients": "Agent Name"} (recipients is REQUIRED for user API)
         """
-        mention = self._build_mention(target_agent)
-        
-        if not mention:
-            logger.error(f"[Bridge] Cannot send message: missing agent UUID for {target_agent}")
-            return {"error": "missing_agent_id", "detail": f"Configure {target_agent} UUID in env vars"}
-
         payload = {
-            "message": {
-                "content": content,
-                "mentions": [mention]
-            }
+            "content": content,
+            "recipients": recipients,  # REQUIRED for user API - comma-separated names
         }
 
         try:
+            # User API endpoint (NOT /agent/...)
             resp = requests.post(
                 f"{BAND_BASE}/chats/{self.room_id}/messages",
                 headers=self.headers,
@@ -94,7 +60,7 @@ class BandChatBridge:
                 return {"error": "validation_error", "detail": error_detail}
 
             if resp.status_code == 403:
-                logger.error("[Bridge] 403 Forbidden - Agent not in chat or wrong permissions")
+                logger.error("[Bridge] 403 Forbidden - User not in chat or wrong permissions")
                 return {"error": "forbidden"}
 
             if resp.status_code == 401:
@@ -116,8 +82,9 @@ class BandChatBridge:
             return {"error": "unknown", "detail": str(e)}
 
     def _get_messages(self, limit: int = 50) -> list:
-        """Get recent messages from Band chat room."""
+        """Get recent messages from Band chat room using user API."""
         try:
+            # User API endpoint for listing messages
             resp = requests.get(
                 f"{BAND_BASE}/chats/{self.room_id}/messages",
                 headers=self.headers,
@@ -126,7 +93,7 @@ class BandChatBridge:
             )
 
             if resp.status_code == 403:
-                logger.warning("[Bridge] 403 reading messages - using fallback")
+                logger.warning("[Bridge] 403 reading messages")
                 return []
             if resp.status_code == 404:
                 logger.warning(f"[Bridge] Chat {self.room_id} not found")
@@ -179,9 +146,12 @@ class BandChatBridge:
             "data": f"Initializing 5-agent Band workflow for {target_competitor}"
         })
 
-        # Send message with @mention to trigger agent
+        # Send message as user with @mention to trigger agent
         message = f"@ShadowSignal Investigator analyze {target_competitor}"
-        resp = self._send_message(message, target_agent="ShadowSignal Investigator")
+        resp = self._send_message(
+            content=message,
+            recipients="ShadowSignal Investigator"  # REQUIRED for user API
+        )
 
         if resp.get("error"):
             error_type = resp.get("error")
