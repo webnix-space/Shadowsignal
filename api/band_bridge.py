@@ -1,6 +1,8 @@
 """
-ShadowSignal Frontend-Backend Bridge
+ShadowSignal Frontend-Backend Bridge — FIXED
 Connects the Vercel frontend to the Band chat agent workflow on Railway.
+FIXED: 422 JSON Payload formatting for Band API
+FIXED: Breaking 90-second timeout loops when API auth fails
 """
 import os
 import requests
@@ -41,13 +43,14 @@ class BandChatBridge:
         }
 
     def _send_message(self, content: str, mentions: list = None) -> dict:
-        """Send a message to the Band chat room."""
+        """Send a message to the Band chat room using the officially accepted schema."""
+        # 🚨 FIX: Band API 422 Error resolved by flattening the payload structure
         payload = {
-            "message": {
-                "content": content,
-                "mentions": mentions or []
-            }
+            "content": content
         }
+        if mentions:
+            payload["mentions"] = mentions
+
         try:
             resp = requests.post(
                 f"{BAND_BASE}/chats/{self.room_id}/messages",
@@ -57,6 +60,9 @@ class BandChatBridge:
             )
             resp.raise_for_status()
             return resp.json()
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"[Bridge] Band API Rejected Payload (HTTP Error): {e.response.text}")
+            return {}
         except Exception as e:
             logger.error(f"[Bridge] Failed to send message: {e}")
             return {}
@@ -110,12 +116,21 @@ class BandChatBridge:
         })
 
         # Send message to Band room mentioning Investigator
-        # We need to find the Investigator's participant ID first
         mentions = self._get_agent_mentions(["ShadowSignal Investigator"])
-
         message = f"@{mentions[0]['name'] if mentions else 'ShadowSignal Investigator'} analyze {target_competitor}"
 
-        self._send_message(message, mentions)
+        resp = self._send_message(message, mentions)
+
+        # 🚨 FIX: Break gracefully if API auth fails to stop the 90-second UI hang
+        if not resp:
+            self.workflow_results["status"] = "error"
+            self.workflow_results["ledger"].append({
+                "timestamp": datetime.now().isoformat(),
+                "agent": "SYSTEM",
+                "action": "ERROR",
+                "data": "Band API connection failed (403/422). Check Vercel server logs."
+            })
+            return workflow_id
 
         self.workflow_results["ledger"].append({
             "timestamp": datetime.now().isoformat(),
@@ -161,6 +176,10 @@ class BandChatBridge:
         Poll the Band chat room for agent responses.
         Returns collected results from all 5 agents.
         """
+        # 🚨 FIX: Do not poll if the trigger already failed
+        if self.workflow_results.get("status") == "error":
+            return self.workflow_results
+
         start_time = time.time()
         agents_found = set()
 
@@ -222,8 +241,4 @@ class BandChatBridge:
         if self.workflow_results["status"] == "running":
             self.workflow_results["status"] = "timeout"
 
-        return self.workflow_results
-
-    def get_results(self) -> dict:
-        """Get current workflow results."""
         return self.workflow_results
