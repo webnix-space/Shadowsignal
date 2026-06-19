@@ -42,32 +42,29 @@ class BandChatBridge:
             "status": "idle",
             "ledger": [],
         }
+    
+     def _send_message(self, content: str) -> dict:
+    """
+    FIXED: Band.ai rejects 'chat_id' in body — it's already in the URL path.
+    Only send 'content' (and optional 'recipients').
+    """
+    payload = {
+        "content": content,
+        # Optional: "recipients": "ShadowSignal Investigator"  # if you want to @mention
+    }
 
-    def _send_message(self, content: str) -> dict:
-        """
-        FIXED: Uses correct Band.ai create_agent_chat_message schema.
-        Parameters: chat_id (required), content (required), recipients (optional)
-        """
-        # CORRECT PAYLOAD for create_agent_chat_message
-        payload = {
-            "chat_id": self.room_id,
-            "content": content,
-            # Optional: recipients = "ShadowSignal Investigator" to @mention
-        }
+    try:
+        resp = requests.post(
+            f"{BAND_BASE}/chats/{self.room_id}/messages",
+            headers=self.headers,
+            json=payload,
+            timeout=15,
+        )
 
-        try:
-            resp = requests.post(
-                f"{BAND_BASE}/chats/{self.room_id}/messages",
-                headers=self.headers,
-                json=payload,
-                timeout=15,
-            )
-
-            # Log the actual error for debugging
-            if resp.status_code == 422:
-                error_detail = resp.json() if resp.text else {}
-                logger.error(f"[Bridge] 422 Validation Error: {error_detail}")
-                return {"error": "validation_error", "detail": error_detail}
+        if resp.status_code == 422:
+            error_detail = resp.json() if resp.text else {}
+            logger.error(f"[Bridge] 422 Validation Error: {error_detail}")
+            return {"error": "validation_error", "detail": error_detail}
 
             if resp.status_code == 403:
                 logger.error("[Bridge] 403 Forbidden - Check API key permissions")
@@ -94,16 +91,15 @@ class BandChatBridge:
             logger.error(f"[Bridge] Failed to send message: {e}")
             return {"error": "unknown", "detail": str(e)}
 
-    def _get_messages(self, limit: int = 50) -> list:
-        """
-        FIXED: Proper error handling for 403 and other errors.
-        Uses list_my_chat_messages parameters: chat_id, limit, page, etc.
-        """
-        try:
-            resp = requests.get(
-                f"{BAND_BASE}/chats/{self.room_id}/messages",
-                headers=self.headers,
-                params={
+         def _get_messages(self, limit: int = 50) -> list:
+    try:
+        resp = requests.get(
+            f"{BAND_BASE}/chats/{self.room_id}/messages",
+            headers=self.headers,
+            params={"limit": limit},  # Removed "chat_id" from params
+            timeout=10,
+        )
+        # ... rest same
                     "chat_id": self.room_id,
                     "limit": limit,
                     # Optional: page, page_size, message_type, since
