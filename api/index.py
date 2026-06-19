@@ -1036,7 +1036,7 @@ target+' hiring 200+ engineers in Bangalore - R&D expansion signal',
 recommended_actions:[
 'Accelerate own AI integration roadmap - '+target+' gaining 6-month lead',
 'Evaluate Azure partnership impact on multi-cloud strategy',
-'Counter Competitor Y\'s free tier with limited-time trial expansion',
+'Counter Competitor Y's free tier with limited-time trial expansion',
 'Monitor '+target+"'s patent for potential infringement risks",
 'Prepare defensive messaging around vendor lock-in concerns'
 ]
