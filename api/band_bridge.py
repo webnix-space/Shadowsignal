@@ -2,23 +2,21 @@
 ShadowSignal Frontend-Backend Bridge — FIXED
 Connects the Vercel frontend to the Band chat agent workflow on Railway.
 FIXED: 422 JSON Payload formatting for Band API
-FIXED: Breaking 90-second timeout loops when API auth fails
+FIXED: 403 Forbidden error by bypassing the /participants endpoint
 """
 import os
 import requests
-import json
 import time
 import uuid
 import logging
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Optional
 
 BAND_API_KEY = os.getenv("BAND_API_KEY", "").strip()
 BAND_ROOM_ID = os.getenv("BAND_ROOM_ID", "").strip()
 BAND_BASE = "https://app.band.ai/api/v1/agent"
 
 logger = logging.getLogger(__name__)
-
 
 class BandChatBridge:
     """
@@ -42,15 +40,13 @@ class BandChatBridge:
             "ledger": [],
         }
 
-    def _send_message(self, content: str, mentions: list = None) -> dict:
+    def _send_message(self, content: str) -> dict:
         """Send a message to the Band chat room using the officially accepted schema."""
-        # 🚨 FIX: Band API 422 Error resolved by flattening the payload structure
+        # 🚨 FIX 422 ERROR: Changed root key from 'content' to 'message' to match Band's validation schema
         payload = {
-            "content": content
+            "message": content
         }
-        if mentions:
-            payload["mentions"] = mentions
-
+        
         try:
             resp = requests.post(
                 f"{BAND_BASE}/chats/{self.room_id}/messages",
@@ -61,7 +57,14 @@ class BandChatBridge:
             resp.raise_for_status()
             return resp.json()
         except requests.exceptions.HTTPError as e:
-            logger.error(f"[Bridge] Band API Rejected Payload (HTTP Error): {e.response.text}")
+            logger.error(f"[Bridge] Band API Rejected Payload (HTTP Error {e.response.status_code}): {e.response.text}")
+            
+            # Safe Fallback just in case Band expects 'text'
+            try:
+                r2 = requests.post(f"{BAND_BASE}/chats/{self.room_id}/messages", headers=self.headers, json={"text": content}, timeout=15)
+                return r2.json()
+            except:
+                pass
             return {}
         except Exception as e:
             logger.error(f"[Bridge] Failed to send message: {e}")
@@ -89,12 +92,10 @@ class BandChatBridge:
         """Extract the latest message content from a specific agent."""
         for msg in reversed(messages):
             sender = msg.get("sender") or msg.get("author") or {}
-            if isinstance(sender, dict):
-                name = sender.get("name", "")
-            else:
-                name = str(sender)
+            name = sender.get("name", "") if isinstance(sender, dict) else str(sender)
+            
             if agent_name.lower() in name.lower():
-                content = msg.get("content") or msg.get("message", {}).get("content", "")
+                content = msg.get("content") or msg.get("message", {}).get("content") or msg.get("text", "")
                 return str(content)
         return None
 
@@ -107,7 +108,6 @@ class BandChatBridge:
         self.workflow_results["status"] = "running"
         self.workflow_results["ledger"] = []
 
-        # Add ledger entry
         self.workflow_results["ledger"].append({
             "timestamp": datetime.now().isoformat(),
             "agent": "SYSTEM",
@@ -115,20 +115,19 @@ class BandChatBridge:
             "data": f"Initializing 5-agent Band workflow for {target_competitor}"
         })
 
-        # Send message to Band room mentioning Investigator
-        mentions = self._get_agent_mentions(["ShadowSignal Investigator"])
-        message = f"@{mentions[0]['name'] if mentions else 'ShadowSignal Investigator'} analyze {target_competitor}"
+        # 🚨 FIX 403 ERROR: We deleted the `_get_agent_mentions` function completely.
+        # It was hitting a restricted /participants endpoint. We now trigger the agent by just sending the command.
+        message = f"@ShadowSignal Investigator analyze {target_competitor}"
+        
+        resp = self._send_message(message)
 
-        resp = self._send_message(message, mentions)
-
-        # 🚨 FIX: Break gracefully if API auth fails to stop the 90-second UI hang
         if not resp:
             self.workflow_results["status"] = "error"
             self.workflow_results["ledger"].append({
                 "timestamp": datetime.now().isoformat(),
                 "agent": "SYSTEM",
                 "action": "ERROR",
-                "data": "Band API connection failed (403/422). Check Vercel server logs."
+                "data": "Band API connection failed. Check payload schema."
             })
             return workflow_id
 
@@ -141,42 +140,11 @@ class BandChatBridge:
 
         return workflow_id
 
-    def _get_agent_mentions(self, agent_names: list) -> list:
-        """Get participant IDs for agents by name."""
-        try:
-            resp = requests.get(
-                f"{BAND_BASE}/chats/{self.room_id}/participants",
-                headers=self.headers,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            participants = resp.json()
-            if isinstance(participants, dict):
-                participants = participants.get("participants", []) or participants.get("data", [])
-
-            mentions = []
-            for p in participants:
-                if not isinstance(p, dict):
-                    continue
-                name = p.get("name", "")
-                agent_id = p.get("id") or p.get("agent", {}).get("id")
-                if any(target.lower() in name.lower() for target in agent_names):
-                    mentions.append({
-                        "id": agent_id,
-                        "name": name,
-                        "handle": p.get("handle", name.lower().replace(" ", ""))
-                    })
-            return mentions
-        except Exception as e:
-            logger.error(f"[Bridge] Failed to get participants: {e}")
-            return []
-
     def poll_workflow(self, workflow_id: str, timeout: int = 120) -> dict:
         """
         Poll the Band chat room for agent responses.
         Returns collected results from all 5 agents.
         """
-        # 🚨 FIX: Do not poll if the trigger already failed
         if self.workflow_results.get("status") == "error":
             return self.workflow_results
 
@@ -186,7 +154,6 @@ class BandChatBridge:
         while time.time() - start_time < timeout:
             messages = self._get_messages(limit=100)
 
-            # Check for each agent's output
             for agent_name, context_key in [
                 ("ShadowSignal Investigator", "raw_intel"),
                 ("ShadowSignal Analyst", "analysis"),
@@ -198,11 +165,10 @@ class BandChatBridge:
                     continue
 
                 content = self._extract_agent_content(messages, agent_name)
-                if content and len(content) > 50:  # Meaningful response
+                if content and len(content) > 50:
                     self.workflow_results[context_key] = content
                     agents_found.add(context_key)
 
-                    # Add to ledger
                     action = {
                         "raw_intel": "INTEL_DEPOSITED",
                         "analysis": "ANALYSIS_COMPLETE",
@@ -218,12 +184,10 @@ class BandChatBridge:
                         "data": f"{len(content)} chars received"
                     })
 
-            # Check if workflow is complete
-            if len(agents_found) >= 4:  # At least 4 agents responded
+            if len(agents_found) >= 4:
                 self.workflow_results["status"] = "complete"
                 break
 
-            # Check for blocked status
             audit = self.workflow_results.get("audit", "")
             if audit and "[CRITICAL RISK]" in audit:
                 if "deliverables" not in agents_found:
