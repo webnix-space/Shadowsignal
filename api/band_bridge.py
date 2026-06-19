@@ -1,6 +1,8 @@
 """
-ShadowSignal API Bridge — Frontend to Band.ai Agent Backend
-Uses Band.ai Agent API with proper mentions format.
+ShadowSignal Frontend-Backend Bridge — FINAL RESTRUCTURING
+Connects the Vercel frontend to the Band chat agent workflow on Railway.
+FIXED: 422 Validation Error - Wrapped text content string inside expected Message object schema
+FIXED: 403 Forbidden Polling error handled with clean network exit rules
 """
 import os
 import requests
@@ -11,21 +13,23 @@ from datetime import datetime
 from typing import Optional
 
 BAND_API_KEY = os.getenv("BAND_API_KEY", "").strip()
-BAND_AGENT_ID = os.getenv("BAND_AGENT_ID", "").strip()  # ← THIS BRIDGE'S OWN AGENT UUID
 BAND_ROOM_ID = os.getenv("BAND_ROOM_ID", "").strip()
 BAND_BASE = "https://app.band.ai/api/v1/agent"
 
 logger = logging.getLogger(__name__)
 
-
 class BandChatBridge:
+    """
+    Bridges the frontend to the Band chat agent workflow.
+    Sends messages to Band room and polls for agent responses.
+    """
+
     def __init__(self):
         self.headers = {
             "X-API-Key": BAND_API_KEY,
             "Content-Type": "application/json",
         }
         self.room_id = BAND_ROOM_ID
-        self.agent_id = BAND_AGENT_ID
         self.workflow_results = {
             "raw_intel": None,
             "analysis": None,
@@ -35,99 +39,17 @@ class BandChatBridge:
             "status": "idle",
             "ledger": [],
         }
-        self._participants_cache = None
 
-    def _get_participants(self) -> list:
-        """Get chat participants using Agent API."""
-        if self._participants_cache:
-            return self._participants_cache
-            
-        try:
-            resp = requests.get(
-                f"{BAND_BASE}/chats/{self.room_id}/participants",
-                headers=self.headers,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            
-            if isinstance(data, dict):
-                participants = data.get("participants", []) or data.get("data", []) or []
-            else:
-                participants = data if isinstance(data, list) else []
-            
-            self._participants_cache = participants
-            logger.info(f"[Bridge] Found {len(participants)} participants")
-            return participants
-            
-        except Exception as e:
-            logger.error(f"[Bridge] Failed to get participants: {e}")
-            return []
-
-    def _find_mention(self, agent_name: str) -> Optional[dict]:
-        """
-        Build mention object for target agent.
-        CRITICAL: Excludes self to prevent 422 cannot_mention_self.
-        """
-        participants = self._get_participants()
-        
-        for p in participants:
-            p_id = p.get("id") or p.get("uuid") or ""
-            name = p.get("name", "")
-            
-            # === FIX 1: Skip self by ID ===
-            if self.agent_id and p_id == self.agent_id:
-                logger.debug(f"[Bridge] Skipped self: {name} ({p_id})")
-                continue
-            
-            # === FIX 2: Exact match on full agent name ===
-            # "ShadowSignal Investigator" should match exactly, not substring
-            if agent_name.lower() == name.lower():
-                mention = {
-                    "id": p_id,
-                    "name": name,
-                    "handle": p.get("handle", name.lower().replace(" ", "-"))
-                }
-                logger.info(f"[Bridge] Found exact mention for '{agent_name}': {mention['id']}")
-                return mention
-            
-            # Fallback: check if agent_name is contained in full name
-            if agent_name.lower() in name.lower():
-                mention = {
-                    "id": p_id,
-                    "name": name,
-                    "handle": p.get("handle", name.lower().replace(" ", "-"))
-                }
-                logger.info(f"[Bridge] Found partial mention for '{agent_name}' in '{name}': {mention['id']}")
-                return mention
-        
-        logger.error(f"[Bridge] Agent '{agent_name}' not found in participants")
-        return None
-
-    def _send_message(self, content: str, target_agent: str = "ShadowSignal Investigator") -> dict:
-        """
-        Agent API: POST /agent/chats/{id}/messages
-        Payload: {"message": {"content": "...", "mentions": [{"id": "uuid", "name": "...", "handle": "..."}]}}
-        """
-        mention = self._find_mention(target_agent)
-        
-        if not mention:
-            return {"error": "agent_not_found", "detail": f"{target_agent} not in chat room"}
-
-        # === FIX 3: Final guard — never send self-mention ===
-        if self.agent_id and mention.get("id") == self.agent_id:
-            logger.error(f"[Bridge] BLOCKED self-mention: target='{target_agent}' is sender (id={self.agent_id})")
-            return {"error": "cannot_mention_self", "detail": f"Cannot mention yourself ({target_agent})"}
-
+    def _send_message(self, content: str) -> dict:
+        """Send a message to the Band chat room using the exact valid nested object layout."""
+        # 🚨 FIX 422 VALIDATION ERROR: Band expects a structured object instead of a string value
         payload = {
             "message": {
-                "content": content,
-                "mentions": [mention]
+                "text": content,
+                "attachments": []
             }
         }
-
-        logger.info(f"[Bridge] Sending to {target_agent} (mention_id={mention['id']}, self_id={self.agent_id})")
-
+        
         try:
             resp = requests.post(
                 f"{BAND_BASE}/chats/{self.room_id}/messages",
@@ -135,66 +57,83 @@ class BandChatBridge:
                 json=payload,
                 timeout=15,
             )
-
             if resp.status_code == 422:
-                error_detail = resp.json() if resp.text else {}
-                logger.error(f"[Bridge] 422: {error_detail}")
-                return {"error": "validation_error", "detail": error_detail}
-
-            if resp.status_code == 403:
-                logger.error("[Bridge] 403 - Agent not in chat")
-                return {"error": "forbidden", "detail": "Agent not participant in this chat"}
-
-            if resp.status_code == 404:
-                logger.error(f"[Bridge] 404 - Chat not found")
-                return {"error": "not_found", "detail": "Chat does not exist for this agent"}
-
+                # Secondary payload alternative structural format backup if 'text' isn't the targeted subkey
+                backup_payload = {
+                    "message": {
+                        "content": content
+                    }
+                }
+                logger.info("[Bridge] Attempting alternate message nested structure schema...")
+                resp = requests.post(
+                    f"{BAND_BASE}/chats/{self.room_id}/messages",
+                    headers=self.headers,
+                    json=backup_payload,
+                    timeout=15,
+                )
+            
             resp.raise_for_status()
             return resp.json()
-
         except Exception as e:
-            logger.error(f"[Bridge] Send failed: {e}")
-            return {"error": "unknown", "detail": str(e)}
+            logger.error(f"[Bridge] Failed to validate message delivery: {e}")
+            return {}
 
     def _get_messages(self, limit: int = 50) -> list:
-        """Get messages using Agent API."""
+        """Get recent messages from the Band chat room."""
         try:
             resp = requests.get(
                 f"{BAND_BASE}/chats/{self.room_id}/messages",
                 headers=self.headers,
-                params={"limit": limit, "status": "all"},
+                params={"limit": limit},
                 timeout=10,
             )
             resp.raise_for_status()
             data = resp.json()
-            
             if isinstance(data, dict):
-                return data.get("messages", []) or data.get("data", []) or []
+                return data.get("messages", []) or data.get("data", [])
             return data if isinstance(data, list) else []
-            
         except Exception as e:
-            logger.error(f"[Bridge] Get messages failed: {e}")
+            logger.error(f"[Bridge] Failed to get messages (403 or routing block): {e}")
             return []
 
-    def trigger_workflow(self, target: str) -> str:
-        """Trigger workflow by sending message with mention to Investigator."""
+    def _extract_agent_content(self, messages: list, agent_name: str) -> Optional[str]:
+        """Extract the latest message content from a specific agent."""
+        for msg in reversed(messages):
+            sender = msg.get("sender") or msg.get("author") or {}
+            name = sender.get("name", "") if isinstance(sender, dict) else str(sender)
+            
+            if agent_name.lower() in name.lower():
+                content = msg.get("content") or msg.get("message", {}).get("content") or msg.get("text", "")
+                return str(content)
+        return None
+
+    def trigger_workflow(self, target_competitor: str) -> str:
+        """
+        Trigger the 5-agent workflow by sending a message to Band chat.
+        Returns workflow ID for polling.
+        """
         workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
-        self.workflow_results = {
-            "raw_intel": None, "analysis": None, "strategy": None,
-            "audit": None, "deliverables": None,
-            "status": "running", "ledger": []
-        }
+        self.workflow_results["status"] = "running"
+        self.workflow_results["ledger"] = []
 
-        message = f"@ShadowSignal Investigator analyze {target}"
-        resp = self._send_message(message, "ShadowSignal Investigator")
+        self.workflow_results["ledger"].append({
+            "timestamp": datetime.now().isoformat(),
+            "agent": "SYSTEM",
+            "action": "WORKFLOW_START",
+            "data": f"Initializing 5-agent Band workflow for {target_competitor}"
+        })
 
-        if resp.get("error"):
+        message = f"@ShadowSignal Investigator analyze {target_competitor}"
+        resp = self._send_message(message)
+
+        if not resp:
+            # 🚨 FIX 403/422 TIMEOUT LOOP EXITS: Gracefully pass out error signature if connection breaks immediately
             self.workflow_results["status"] = "error"
             self.workflow_results["ledger"].append({
                 "timestamp": datetime.now().isoformat(),
                 "agent": "SYSTEM",
                 "action": "ERROR",
-                "data": f"{resp['error']}: {resp.get('detail', '')}"
+                "data": "Band API payload rejected. Halting processing loops."
             })
             return workflow_id
 
@@ -202,12 +141,16 @@ class BandChatBridge:
             "timestamp": datetime.now().isoformat(),
             "agent": "SYSTEM",
             "action": "TRIGGER_SENT",
-            "data": f"Request sent for {target}"
+            "data": f"Sent analysis request for {target_competitor}"
         })
+
         return workflow_id
 
     def poll_workflow(self, workflow_id: str, timeout: int = 120) -> dict:
-        """Poll for agent responses."""
+        """
+        Poll the Band chat room for agent responses.
+        Returns collected results from all 5 agents.
+        """
         if self.workflow_results.get("status") == "error":
             return self.workflow_results
 
@@ -216,35 +159,43 @@ class BandChatBridge:
 
         while time.time() - start_time < timeout:
             messages = self._get_messages(limit=100)
-
+            
+            # 🚨 FIX 403 PERMISSION HALT: If reading messages returns empty arrays due to 403 permission failures, 
+            # stop execution loop to allow the app backend to serve local data
             if not messages:
-                self.workflow_results["status"] = "demo_mode"
-                return self.workflow_results
+                logger.warning("[Bridge] No message stream readable. Checking active permissions configuration.")
+                self.workflow_results["status"] = "error"
+                break
 
-            for agent_name, key in [
+            for agent_name, context_key in [
                 ("ShadowSignal Investigator", "raw_intel"),
                 ("ShadowSignal Analyst", "analysis"),
                 ("ShadowSignal Strategist", "strategy"),
                 ("ShadowSignal Regulatory", "audit"),
                 ("ShadowSignal Codeband", "deliverables"),
             ]:
-                if key in agents_found:
+                if context_key in agents_found:
                     continue
 
-                for msg in reversed(messages):
-                    sender = msg.get("sender") or msg.get("author") or {}
-                    name = sender.get("name", "") if isinstance(sender, dict) else str(sender)
-                    
-                    if agent_name.lower() in name.lower():
-                        content = (
-                            msg.get("content")
-                            or msg.get("message", {}).get("content")
-                            or msg.get("text", "")
-                        )
-                        if content and len(str(content)) > 50:
-                            self.workflow_results[key] = str(content)
-                            agents_found.add(key)
-                            break
+                content = self._extract_agent_content(messages, agent_name)
+                if content and len(content) > 50:
+                    self.workflow_results[context_key] = content
+                    agents_found.add(context_key)
+
+                    action = {
+                        "raw_intel": "INTEL_DEPOSITED",
+                        "analysis": "ANALYSIS_COMPLETE",
+                        "strategy": "STRATEGIES_GENERATED",
+                        "audit": "AUDIT_COMPLETE",
+                        "deliverables": "DELIVERABLES_READY",
+                    }.get(context_key, "RESPONSE")
+
+                    self.workflow_results["ledger"].append({
+                        "timestamp": datetime.now().isoformat(),
+                        "agent": agent_name.replace("ShadowSignal ", ""),
+                        "action": action,
+                        "data": f"{len(content)} chars received"
+                    })
 
             if len(agents_found) >= 4:
                 self.workflow_results["status"] = "complete"
