@@ -58,19 +58,39 @@ def agents_status():
         "timestamp": datetime.utcnow().isoformat()
     })
 
-# ==================== ANALYZE ENDPOINT ====================
+# ==================== ANALYZE ENDPOINT ================= 
 @app.route("/api/analyze", methods=["POST"])
 def analyze():
     try:
         data = request.get_json() or {}
         target = data.get("target", "").strip()
-        mode = data.get("mode", "comprehensive")
 
         if not target:
             return jsonify({"error": "Target is required"}), 400
 
-        result = generate_demo_result(target, mode)
-        return jsonify(result)
+        if not Config.BAND_API_KEY or not Config.BAND_ROOM_ID:
+            logger.warning("Band not configured, falling back to demo data")
+            return jsonify(generate_demo_result(target, data.get("mode", "comprehensive")))
+
+        import sys
+        sys.path.insert(0, os.path.dirname(__file__))
+        from band_bridge import BandChatBridge
+
+        bridge = BandChatBridge()
+        workflow_id = bridge.trigger_workflow(target)
+        result = bridge.poll_workflow(workflow_id, timeout=90)
+
+        return jsonify({
+            "target": target,
+            "timestamp": datetime.utcnow().isoformat(),
+            "status": result.get("status"),
+            "raw_intel": result.get("raw_intel"),
+            "analysis": result.get("analysis"),
+            "strategy": result.get("strategy"),
+            "audit": result.get("audit"),
+            "deliverables": result.get("deliverables"),
+            "ledger": result.get("ledger", []),
+        })
 
     except Exception as e:
         logger.error("Analyze error: %s", e)
