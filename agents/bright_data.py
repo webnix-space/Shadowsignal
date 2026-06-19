@@ -244,7 +244,7 @@ def format_intel_for_llm(intel: dict) -> str:
     sources = intel.get("sources", [])
     if sources:
         sections.append("**Sources:**")
-        for src in set(sources)[:5]:
+        for src in list(dict.fromkeys(sources))[:5]:
             sections.append(f"- {src}")
 
     return "\n".join(sections) if sections else "No real-time web data available."
