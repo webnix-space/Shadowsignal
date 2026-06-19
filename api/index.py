@@ -289,7 +289,7 @@ def index():
     """Serve the professional intelligence terminal UI."""
     return render_template_string(TERMINAL_HTML)
 
-TERMINAL_HTML = """<!DOCTYPE html>
+TERMINAL_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
