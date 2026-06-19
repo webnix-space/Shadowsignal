@@ -1,16 +1,11 @@
 """
-ShadowSignal Frontend-Backend Bridge
-Connects the Vercel frontend to the Band chat agent workflow.
-FIXED: Removed chat_id from payload (Band rejects it as unexpected field)
-FIXED: Consistent 4-space indentation
+ShadowSignal Band Bridge — DEBUG VERSION
+Tries multiple payload formats to find the correct one.
 """
 import os
 import requests
-import time
-import uuid
+import json
 import logging
-from datetime import datetime
-from typing import Optional
 
 BAND_API_KEY = os.getenv("BAND_API_KEY", "").strip()
 BAND_ROOM_ID = os.getenv("BAND_ROOM_ID", "").strip()
@@ -26,197 +21,52 @@ class BandChatBridge:
             "Content-Type": "application/json",
         }
         self.room_id = BAND_ROOM_ID
-        self.workflow_results = {
-            "raw_intel": None,
-            "analysis": None,
-            "strategy": None,
-            "audit": None,
-            "deliverables": None,
-            "status": "idle",
-            "ledger": [],
-        }
 
-    def _send_message(self, content: str) -> dict:
-        """Send message to Band chat. Only 'content' in body — chat_id is in URL."""
-        payload = {
-            "content": content,
-        }
+    def _test_send(self, content: str) -> dict:
+        """
+        Try multiple payload formats until one succeeds.
+        Logs each attempt for debugging.
+        """
+        test_payloads = [
+            ("plain_string", content),
+            ("text_field", {"text": content}),
+            ("message_field", {"message": content}),
+            ("body_field", {"body": content}),
+            ("content_wrapped", {"content": {"text": content}}),
+            ("message_object", {"message": {"text": content}}),
+            ("data_field", {"data": content}),
+        ]
 
-        try:
-            resp = requests.post(
-                f"{BAND_BASE}/chats/{self.room_id}/messages",
-                headers=self.headers,
-                json=payload,
-                timeout=15,
-            )
-
-            if resp.status_code == 422:
-                error_detail = resp.json() if resp.text else {}
-                logger.error(f"[Bridge] 422 Validation Error: {error_detail}")
-                return {"error": "validation_error", "detail": error_detail}
-
-            if resp.status_code == 403:
-                logger.error("[Bridge] 403 Forbidden - Check API key permissions")
-                return {"error": "forbidden"}
-
-            if resp.status_code == 401:
-                logger.error("[Bridge] 401 Unauthorized - Invalid API key")
-                return {"error": "unauthorized"}
-
-            if resp.status_code == 404:
-                logger.error(f"[Bridge] 404 - Chat room {self.room_id} not found")
-                return {"error": "not_found"}
-
-            resp.raise_for_status()
-            return resp.json()
-
-        except requests.exceptions.Timeout:
-            logger.error("[Bridge] Request timeout")
-            return {"error": "timeout"}
-        except Exception as e:
-            logger.error(f"[Bridge] Failed to send message: {e}")
-            return {"error": "unknown", "detail": str(e)}
-
-    def _get_messages(self, limit: int = 50) -> list:
-        """Get recent messages from Band chat room."""
-        try:
-            resp = requests.get(
-                f"{BAND_BASE}/chats/{self.room_id}/messages",
-                headers=self.headers,
-                params={"limit": limit},
-                timeout=10,
-            )
-
-            if resp.status_code == 403:
-                logger.warning("[Bridge] 403 reading messages")
-                return []
-            if resp.status_code == 404:
-                logger.warning(f"[Bridge] Chat {self.room_id} not found")
-                return []
-
-            resp.raise_for_status()
-            data = resp.json()
-
-            if isinstance(data, dict):
-                return data.get("messages", []) or data.get("data", []) or []
-            return data if isinstance(data, list) else []
-
-        except Exception as e:
-            logger.error(f"[Bridge] Failed to get messages: {e}")
-            return []
-
-    def _extract_agent_content(self, messages: list, agent_name: str) -> Optional[str]:
-        """Extract latest message content from a specific agent."""
-        for msg in reversed(messages):
-            sender = msg.get("sender") or msg.get("author") or {}
-            name = sender.get("name", "") if isinstance(sender, dict) else str(sender)
-
-            if agent_name.lower() in name.lower():
-                content = (
-                    msg.get("content")
-                    or msg.get("message", {}).get("content")
-                    or msg.get("text", "")
-                    or msg.get("body", "")
+        for name, payload in test_payloads:
+            try:
+                logger.info(f"[Bridge] Trying format '{name}': {json.dumps(payload)[:100]}...")
+                
+                resp = requests.post(
+                    f"{BAND_BASE}/chats/{self.room_id}/messages",
+                    headers=self.headers,
+                    json=payload if not isinstance(payload, str) else None,
+                    data=json.dumps(payload) if isinstance(payload, str) else None,
+                    timeout=15,
                 )
-                return str(content) if content else None
-        return None
 
-    def trigger_workflow(self, target_competitor: str) -> str:
-        """Trigger 5-agent workflow by sending message to Band chat."""
-        workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
-        self.workflow_results = {
-            "raw_intel": None,
-            "analysis": None,
-            "strategy": None,
-            "audit": None,
-            "deliverables": None,
-            "status": "running",
-            "ledger": [],
-        }
+                if resp.status_code == 200:
+                    logger.info(f"[Bridge] SUCCESS with format '{name}'!")
+                    return resp.json()
+                else:
+                    error = resp.json() if resp.text else {}
+                    logger.warning(f"[Bridge] Format '{name}' failed: {resp.status_code} - {error.get('error', {}).get('message', resp.text[:100])}")
 
-        self.workflow_results["ledger"].append({
-            "timestamp": datetime.now().isoformat(),
-            "agent": "SYSTEM",
-            "action": "WORKFLOW_START",
-            "data": f"Initializing 5-agent Band workflow for {target_competitor}"
-        })
+            except Exception as e:
+                logger.warning(f"[Bridge] Format '{name}' exception: {e}")
 
-        message = f"@ShadowSignal Investigator analyze {target_competitor}"
-        resp = self._send_message(message)
+        logger.error("[Bridge] ALL formats failed!")
+        return {"error": "all_formats_failed"}
 
-        if resp.get("error"):
-            error_type = resp.get("error")
-            self.workflow_results["status"] = "error"
-            self.workflow_results["ledger"].append({
-                "timestamp": datetime.now().isoformat(),
-                "agent": "SYSTEM",
-                "action": "ERROR",
-                "data": f"Band API {error_type}: {resp.get('detail', 'Unknown')}"
-            })
-            return workflow_id
-
-        self.workflow_results["ledger"].append({
-            "timestamp": datetime.now().isoformat(),
-            "agent": "SYSTEM",
-            "action": "TRIGGER_SENT",
-            "data": f"Sent analysis request for {target_competitor}"
-        })
-
-        return workflow_id
+    def trigger_workflow(self, target: str) -> str:
+        message = f"@ShadowSignal Investigator analyze {target}"
+        result = self._test_send(message)
+        return result
 
     def poll_workflow(self, workflow_id: str, timeout: int = 120) -> dict:
-        """Poll Band chat room for agent responses."""
-        if self.workflow_results.get("status") == "error":
-            return self.workflow_results
-
-        start_time = time.time()
-        agents_found = set()
-
-        while time.time() - start_time < timeout:
-            messages = self._get_messages(limit=100)
-
-            if not messages:
-                logger.info("[Bridge] No messages readable - switching to demo mode")
-                self.workflow_results["status"] = "demo_mode"
-                return self.workflow_results
-
-            for agent_name, context_key in [
-                ("ShadowSignal Investigator", "raw_intel"),
-                ("ShadowSignal Analyst", "analysis"),
-                ("ShadowSignal Strategist", "strategy"),
-                ("ShadowSignal Regulatory", "audit"),
-                ("ShadowSignal Codeband", "deliverables"),
-            ]:
-                if context_key in agents_found:
-                    continue
-
-                content = self._extract_agent_content(messages, agent_name)
-                if content and len(content) > 50:
-                    self.workflow_results[context_key] = content
-                    agents_found.add(context_key)
-
-                    action_map = {
-                        "raw_intel": "INTEL_DEPOSITED",
-                        "analysis": "ANALYSIS_COMPLETE",
-                        "strategy": "STRATEGIES_GENERATED",
-                        "audit": "AUDIT_COMPLETE",
-                        "deliverables": "DELIVERABLES_READY",
-                    }
-
-                    self.workflow_results["ledger"].append({
-                        "timestamp": datetime.now().isoformat(),
-                        "agent": agent_name.replace("ShadowSignal ", ""),
-                        "action": action_map.get(context_key, "RESPONSE"),
-                        "data": f"{len(content)} chars received"
-                    })
-
-            if len(agents_found) >= 4:
-                self.workflow_results["status"] = "complete"
-                break
-
-            time.sleep(3)
-
-        if self.workflow_results["status"] == "running":
-            self.workflow_results["status"] = "timeout"
-
-        return self.workflow_results
+        # Simplified for debug
+        return {"status": "debug", "send_result": workflow_id}
