@@ -1,5 +1,5 @@
 """
-ShadowSignal Frontend-Backend Bridge — AGENT API VERSION
+ShadowSignal API Bridge — Frontend to Band.ai Agent Backend
 Uses Band.ai Agent API with proper mentions format.
 """
 import os
@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 BAND_API_KEY = os.getenv("BAND_API_KEY", "").strip()
-BAND_AGENT_ID = os.getenv("BAND_AGENT_ID", "").strip()  # ← YOUR AGENT ID
+BAND_AGENT_ID = os.getenv("BAND_AGENT_ID", "").strip()  # ← THIS BRIDGE'S OWN AGENT UUID
 BAND_ROOM_ID = os.getenv("BAND_ROOM_ID", "").strip()
 BAND_BASE = "https://app.band.ai/api/v1/agent"
 
@@ -25,7 +25,7 @@ class BandChatBridge:
             "Content-Type": "application/json",
         }
         self.room_id = BAND_ROOM_ID
-        self.agent_id = BAND_AGENT_ID  # ← Store self ID
+        self.agent_id = BAND_AGENT_ID
         self.workflow_results = {
             "raw_intel": None,
             "analysis": None,
@@ -35,7 +35,6 @@ class BandChatBridge:
             "status": "idle",
             "ledger": [],
         }
-        # Cache for participant UUIDs
         self._participants_cache = None
 
     def _get_participants(self) -> list:
@@ -66,24 +65,41 @@ class BandChatBridge:
             return []
 
     def _find_mention(self, agent_name: str) -> Optional[dict]:
-        """Build mention object for agent. Skips self to avoid 422 cannot_mention_self."""
+        """
+        Build mention object for target agent.
+        CRITICAL: Excludes self to prevent 422 cannot_mention_self.
+        """
         participants = self._get_participants()
         
         for p in participants:
-            p_id = p.get("id") or p.get("uuid")
+            p_id = p.get("id") or p.get("uuid") or ""
             name = p.get("name", "")
             
-            # Skip self — prevents 422 cannot_mention_self
-            if p_id and self.agent_id and p_id == self.agent_id:
-                logger.debug(f"[Bridge] Skipped self in participant search: {name} ({p_id})")
+            # === FIX 1: Skip self by ID ===
+            if self.agent_id and p_id == self.agent_id:
+                logger.debug(f"[Bridge] Skipped self: {name} ({p_id})")
                 continue
             
-            if agent_name.lower() in name.lower():
-                return {
+            # === FIX 2: Exact match on full agent name ===
+            # "ShadowSignal Investigator" should match exactly, not substring
+            if agent_name.lower() == name.lower():
+                mention = {
                     "id": p_id,
                     "name": name,
                     "handle": p.get("handle", name.lower().replace(" ", "-"))
                 }
+                logger.info(f"[Bridge] Found exact mention for '{agent_name}': {mention['id']}")
+                return mention
+            
+            # Fallback: check if agent_name is contained in full name
+            if agent_name.lower() in name.lower():
+                mention = {
+                    "id": p_id,
+                    "name": name,
+                    "handle": p.get("handle", name.lower().replace(" ", "-"))
+                }
+                logger.info(f"[Bridge] Found partial mention for '{agent_name}' in '{name}': {mention['id']}")
+                return mention
         
         logger.error(f"[Bridge] Agent '{agent_name}' not found in participants")
         return None
@@ -98,10 +114,10 @@ class BandChatBridge:
         if not mention:
             return {"error": "agent_not_found", "detail": f"{target_agent} not in chat room"}
 
-        # Extra guard: double-check we're not mentioning self
-        if mention["id"] and self.agent_id and mention["id"] == self.agent_id:
-            logger.error(f"[Bridge] Blocked self-mention for '{target_agent}'")
-            return {"error": "cannot_mention_self", "detail": "Target agent is the sender"}
+        # === FIX 3: Final guard — never send self-mention ===
+        if self.agent_id and mention.get("id") == self.agent_id:
+            logger.error(f"[Bridge] BLOCKED self-mention: target='{target_agent}' is sender (id={self.agent_id})")
+            return {"error": "cannot_mention_self", "detail": f"Cannot mention yourself ({target_agent})"}
 
         payload = {
             "message": {
@@ -109,6 +125,8 @@ class BandChatBridge:
                 "mentions": [mention]
             }
         }
+
+        logger.info(f"[Bridge] Sending to {target_agent} (mention_id={mention['id']}, self_id={self.agent_id})")
 
         try:
             resp = requests.post(
@@ -159,7 +177,7 @@ class BandChatBridge:
             return []
 
     def trigger_workflow(self, target: str) -> str:
-        """Trigger workflow by sending message with mention."""
+        """Trigger workflow by sending message with mention to Investigator."""
         workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
         self.workflow_results = {
             "raw_intel": None, "analysis": None, "strategy": None,
