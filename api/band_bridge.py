@@ -1,5 +1,8 @@
 """
 ShadowSignal API Bridge — Frontend to Band.ai Agent Backend
+Sends trigger messages and polls for agent responses.
+FIXED: Never self-mention. Sends plain text or mentions next agent only.
+FIXED: Properly polls for real agent responses with better diagnostics.
 """
 import os
 import requests
@@ -34,7 +37,6 @@ class BandChatBridge:
         }
         self._participants_cache = None
         self._self_id = None
-        self._self_name = None
 
     def _get_participants(self) -> list:
         if self._participants_cache:
@@ -56,36 +58,6 @@ class BandChatBridge:
             
             self._participants_cache = participants
             logger.info(f"[Bridge] Found {len(participants)} participants")
-            
-            # Discover self from participants
-            for p in participants:
-                p_id = p.get("id") or p.get("uuid") or ""
-                # Try a test mention to discover self
-                if not self._self_id:
-                    test_payload = {
-                        "message": {
-                            "content": "test",
-                            "mentions": [{
-                                "id": p_id,
-                                "name": p.get("name", ""),
-                                "handle": p.get("handle", "")
-                            }]
-                        }
-                    }
-                    try:
-                        test_resp = requests.post(
-                            f"{BAND_BASE}/chats/{self.room_id}/messages",
-                            headers=self.headers,
-                            json=test_payload,
-                            timeout=5,
-                        )
-                        if test_resp.status_code == 422 and "cannot_mention_self" in test_resp.text:
-                            self._self_id = p_id
-                            self._self_name = p.get("name", "")
-                            logger.info(f"[Bridge] Discovered self: {self._self_name} ({self._self_id})")
-                    except:
-                        pass
-            
             return participants
             
         except Exception as e:
@@ -93,6 +65,7 @@ class BandChatBridge:
             return []
 
     def _find_mention(self, agent_name: str) -> Optional[dict]:
+        """Find mention for target agent, excluding self."""
         participants = self._get_participants()
         
         for p in participants:
@@ -110,10 +83,65 @@ class BandChatBridge:
                     "handle": p.get("handle", name.lower().replace(" ", "-"))
                 }
         
-        logger.error(f"[Bridge] Agent '{agent_name}' not found in participants")
         return None
 
-    def _send_message(self, content: str, target_agent: str) -> dict:
+    def _discover_self(self) -> Optional[str]:
+        """Discover own agent ID by testing mentions."""
+        if self._self_id:
+            return self._self_id
+            
+        participants = self._get_participants()
+        for p in participants:
+            p_id = p.get("id") or p.get("uuid") or ""
+            name = p.get("name", "")
+            if not p_id:
+                continue
+                
+            test_payload = {
+                "message": {
+                    "content": "test",
+                    "mentions": [{
+                        "id": p_id,
+                        "name": name or "test",
+                        "handle": p.get("handle", "")
+                    }]
+                }
+            }
+            try:
+                test_resp = requests.post(
+                    f"{BAND_BASE}/chats/{self.room_id}/messages",
+                    headers=self.headers,
+                    json=test_payload,
+                    timeout=5,
+                )
+                if test_resp.status_code == 422 and "cannot_mention_self" in test_resp.text:
+                    self._self_id = p_id
+                    logger.info(f"[Bridge] Discovered self: {name} ({p_id})")
+                    return p_id
+            except Exception:
+                pass
+        
+        return None
+
+    def _send_plain_message(self, content: str) -> dict:
+        """Send message without mentions (broadcast to room)."""
+        payload = {"message": {"content": content}}
+        
+        try:
+            resp = requests.post(
+                f"{BAND_BASE}/chats/{self.room_id}/messages",
+                headers=self.headers,
+                json=payload,
+                timeout=15,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception as e:
+            logger.error(f"[Bridge] Plain message failed: {e}")
+            return {"error": "send_failed", "detail": str(e)}
+
+    def _send_message_with_mention(self, content: str, target_agent: str) -> dict:
+        """Send message with mention to specific agent."""
         mention = self._find_mention(target_agent)
         
         if not mention:
@@ -138,15 +166,19 @@ class BandChatBridge:
 
             if resp.status_code == 422:
                 error_detail = resp.json() if resp.text else {}
+                err_msg = error_detail.get("error", {}).get("message", "") if isinstance(error_detail, dict) else str(error_detail)
+                
+                if "cannot_mention_self" in err_msg:
+                    self._self_id = mention["id"]
+                    logger.warning(f"[Bridge] Detected self as '{target_agent}' (id={mention['id']}). Cannot mention self.")
+                    return {"error": "cannot_mention_self", "detail": f"Bridge is {target_agent}"}
+                
                 logger.error(f"[Bridge] 422: {error_detail}")
                 return {"error": "validation_error", "detail": error_detail}
 
             if resp.status_code == 403:
-                logger.error("[Bridge] 403 - Agent not in chat")
                 return {"error": "forbidden", "detail": "Agent not participant in this chat"}
-
             if resp.status_code == 404:
-                logger.error(f"[Bridge] 404 - Chat not found")
                 return {"error": "not_found", "detail": "Chat does not exist for this agent"}
 
             resp.raise_for_status()
@@ -175,34 +207,8 @@ class BandChatBridge:
             logger.error(f"[Bridge] Get messages failed: {e}")
             return []
 
-    def _execute_self_work(self, target: str) -> str:
-        """
-        When bridge IS the target agent, execute work locally instead of messaging.
-        This avoids cannot_mention_self error.
-        """
-        logger.info(f"[Bridge] Executing as self ({self._self_name}), skipping self-mention")
-        
-        # Simulate investigator work - replace with actual logic import if available
-        self.workflow_results["raw_intel"] = f"[LOCAL] Investigation completed for {target}"
-        self.workflow_results["status"] = "running"
-        self.workflow_results["ledger"].append({
-            "timestamp": datetime.now().isoformat(),
-            "agent": self._self_name or "ShadowSignal Investigator",
-            "action": "LOCAL_EXECUTION",
-            "data": f"Executed locally for {target}"
-        })
-        
-        # Now message the NEXT agent (Analyst) with the results
-        next_agent = "ShadowSignal Analyst"
-        message = f"Analysis needed for {target}\n\nRaw intel: {self.workflow_results['raw_intel']}"
-        resp = self._send_message(message, next_agent)
-        
-        if resp.get("error"):
-            logger.error(f"[Bridge] Failed to notify {next_agent}: {resp}")
-        
-        return "wf-local"
-
     def trigger_workflow(self, target: str) -> str:
+        """Trigger workflow by sending appropriate message."""
         workflow_id = f"wf-{uuid.uuid4().hex[:8]}"
         self.workflow_results = {
             "raw_intel": None, "analysis": None, "strategy": None,
@@ -210,19 +216,32 @@ class BandChatBridge:
             "status": "running", "ledger": []
         }
 
-        # === FIX: Check if we ARE the investigator ===
-        if not self._self_id:
-            self._get_participants()  # Trigger self-discovery
-            
+        # Discover self first
+        self._discover_self()
+        
         first_agent = "ShadowSignal Investigator"
         
-        # If we discovered self and self IS the first agent, execute locally
-        if self._self_name and first_agent.lower() in self._self_name.lower():
-            return self._execute_self_work(target)
-        
-        # Otherwise send message normally
-        message = f"@ShadowSignal Investigator analyze {target}"
-        resp = self._send_message(message, first_agent)
+        # Check if we ARE the investigator
+        is_self_investigator = False
+        if self._self_id and self._participants_cache:
+            for p in self._participants_cache:
+                p_id = p.get("id") or p.get("uuid") or ""
+                name = p.get("name", "")
+                if p_id == self._self_id and first_agent.lower() in name.lower():
+                    is_self_investigator = True
+                    break
+
+        if is_self_investigator:
+            # === FIX: Send PLAIN message (no mention) so the REAL investigator agent picks it up ===
+            # The real investigator.py agent (separate process with INVESTIGATOR_API_KEY) 
+            # will see this message and process it with Bright Data
+            message = f"Please analyze {target} and provide competitive intelligence"
+            logger.info(f"[Bridge] Sending PLAIN message (bridge IS {first_agent}, real agent will pick it up)")
+            resp = self._send_plain_message(message)
+        else:
+            # Can mention normally
+            message = f"@ShadowSignal Investigator analyze {target}"
+            resp = self._send_message_with_mention(message, first_agent)
 
         if resp.get("error"):
             self.workflow_results["status"] = "error"
@@ -248,13 +267,18 @@ class BandChatBridge:
 
         start_time = time.time()
         agents_found = set()
+        poll_count = 0
 
         while time.time() - start_time < timeout:
             messages = self._get_messages(limit=100)
+            poll_count += 1
 
             if not messages:
-                self.workflow_results["status"] = "demo_mode"
-                return self.workflow_results
+                logger.warning(f"[Bridge] Poll #{poll_count}: No messages yet, waiting...")
+                time.sleep(3)
+                continue
+
+            logger.info(f"[Bridge] Poll #{poll_count}: Got {len(messages)} messages")
 
             for agent_name, key in [
                 ("ShadowSignal Investigator", "raw_intel"),
@@ -279,6 +303,7 @@ class BandChatBridge:
                         if content and len(str(content)) > 50:
                             self.workflow_results[key] = str(content)
                             agents_found.add(key)
+                            logger.info(f"[Bridge] Found {key} from {name} ({len(str(content))} chars)")
                             break
 
             if len(agents_found) >= 4:
@@ -288,6 +313,7 @@ class BandChatBridge:
             time.sleep(3)
 
         if self.workflow_results["status"] == "running":
+            logger.warning(f"[Bridge] Timeout after {timeout}s. Agents found: {agents_found}")
             self.workflow_results["status"] = "timeout"
 
         return self.workflow_results
