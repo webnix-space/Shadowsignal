@@ -1205,3 +1205,45 @@ document.addEventListener('DOMContentLoaded',()=>{window.terminal=new ShadowSign
 </script>
 </body>
 </html>"""
+
+# ==================== NANOPAY BALANCE API ====================
+@app.route("/api/pay/balance", methods=["GET"])
+def pay_balance():
+    import requests as http_requests
+    circle_key = os.environ.get("CIRCLE_API_KEY", "").strip()
+    wallet_id = os.environ.get("CIRCLE_WALLET_ID", "c363f82d-2f21-565d-8825-89ca87f79380").strip()
+    if not circle_key:
+        return jsonify({"balance": "N/A", "error": "CIRCLE_API_KEY not set"})
+    try:
+        resp = http_requests.get(
+            f"https://api.circle.com/v1/w3s/wallets/{wallet_id}/balances",
+            headers={"Authorization": f"Bearer {circle_key}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        balances = resp.json().get("data", {}).get("tokenBalances", [])
+        for b in balances:
+            if b.get("token", {}).get("symbol") == "USDC" and not b.get("token", {}).get("isNative"):
+                return jsonify({"balance": b.get("amount", "0"), "wallet": wallet_id})
+        return jsonify({"balance": "0", "wallet": wallet_id})
+    except Exception as e:
+        return jsonify({"balance": "error", "error": str(e)})
+
+
+# ==================== PAY DASHBOARD ====================
+@app.route("/pay")
+
+PAY_HTML = """<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><title>ShadowSignal Pay</title>
+<script>
+// Redirect to main terminal with pay panel visible
+window.onload = function() {
+  document.body.innerHTML = '<div style="background:#080b0f;color:#e2e8f0;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;font-size:18px">Loading ShadowSignal Pay...</div>';
+  setTimeout(function(){ window.location.href = '/'; }, 1000);
+}
+</script>
+</head><body></body></html>"""
+
+@app.route("/pay")
+def pay_dashboard():
+    return render_template_string(PAY_HTML)
