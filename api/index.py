@@ -1229,10 +1229,160 @@ def pay_balance():
 
 @app.route("/pay")
 def pay_dashboard():
-    html = (
-        "<!DOCTYPE html><html><head><meta charset=UTF-8>"
-        "<title>ShadowSignal Pay</title>"
-        "<meta http-equiv='refresh' content='0;url=/?pay=1'>"
-        "</head><body></body></html>"
-    )
-    return render_template_string(html)
+    return render_template_string("""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShadowSignal Pay</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#080b0f;color:#e2e8f0;font-family:Inter,sans-serif;min-height:100vh}
+header{border-bottom:1px solid #1a2332;padding:16px 24px;display:flex;align-items:center;justify-content:space-between;background:#080b0f}
+.logo{display:flex;align-items:center;gap:10px}
+.lm{width:32px;height:32px;background:#2775ca;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#fff}
+.lt{font-size:15px;font-weight:600}.ls{font-size:12px;color:#64748b}
+.back{font-size:12px;color:#2775ca;text-decoration:none;border:1px solid rgba(39,117,202,0.3);padding:6px 12px;border-radius:6px}
+.badge{display:flex;align-items:center;gap:6px;background:rgba(0,212,170,0.12);border:1px solid rgba(0,212,170,0.3);border-radius:20px;padding:5px 12px;font-size:12px;color:#00d4aa}
+.dot{width:7px;height:7px;background:#00d4aa;border-radius:50%;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+@keyframes slideIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.main{display:grid;grid-template-columns:1fr 320px;height:calc(100vh - 65px)}
+.sp{border-right:1px solid #1a2332;display:flex;flex-direction:column}
+.ph{padding:14px 20px;border-bottom:1px solid #1a2332;display:flex;align-items:center;justify-content:space-between}
+.pt{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#64748b}
+.tc{font-family:monospace;font-size:12px;color:#2775ca}
+.sl{flex:1;overflow-y:auto;padding:10px;display:flex;flex-direction:column;gap:6px}
+.tr{background:#0d1117;border:1px solid #1a2332;border-radius:8px;padding:12px 14px;display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;animation:slideIn 0.3s ease}
+.tr:hover{border-color:#2775ca}
+.tr.new{border-color:rgba(39,117,202,0.5);background:rgba(39,117,202,0.05)}
+.ai{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px}
+.ta{font-size:13px;font-weight:500;margin-bottom:2px}
+.tm{display:flex;align-items:center;gap:8px}
+.tac{font-size:11px;color:#64748b;font-family:monospace}
+.th{font-size:11px;color:#334155;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:120px}
+.tr2{text-align:right;flex-shrink:0}
+.tam{font-family:monospace;font-size:14px;font-weight:600;color:#2775ca}
+.tt{font-size:11px;color:#64748b;margin-top:2px}
+.ts{display:inline-flex;align-items:center;gap:3px;font-size:10px;font-family:monospace;padding:2px 6px;border-radius:4px;margin-top:4px}
+.sc{background:rgba(0,212,170,0.1);color:#00d4aa;border:1px solid rgba(0,212,170,0.2)}
+.sp2{background:rgba(245,158,11,0.1);color:#f59e0b;border:1px solid rgba(245,158,11,0.2)}
+.rp{display:flex;flex-direction:column}
+.wc{padding:20px;border-bottom:1px solid #1a2332}
+.wl{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:8px}
+.wb{font-family:monospace;font-size:28px;font-weight:700;line-height:1;margin-bottom:4px}
+.wb span{font-size:14px;color:#2775ca;font-weight:600}
+.wa{font-family:monospace;font-size:10px;color:#334155;margin-top:8px;word-break:break-all}
+.bc{font-size:12px;color:#ef4444;font-family:monospace;margin-top:4px}
+.sg{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid #1a2332}
+.sc2{padding:14px 16px;border-right:1px solid #1a2332;border-bottom:1px solid #1a2332}
+.sc2:nth-child(even){border-right:none}
+.sc2:nth-last-child(-n+2){border-bottom:none}
+.sl2{font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:0.8px;margin-bottom:4px}
+.sv{font-family:monospace;font-size:18px;font-weight:700}
+.sv.g{color:#00d4aa}.sv.u{color:#2775ca}
+.bd{padding:14px 16px;border-bottom:1px solid #1a2332}
+.bt{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:#64748b;margin-bottom:10px}
+.ar{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.abw{width:70px;height:4px;background:#1a2332;border-radius:2px;overflow:hidden}
+.ab{height:100%;border-radius:2px;transition:width 0.5s ease}
+.at{font-family:monospace;font-size:11px;color:#2775ca;width:48px;text-align:right}
+.ni{padding:12px 16px}
+.nr{display:flex;justify-content:space-between;margin-bottom:6px}
+.nl{font-size:11px;color:#64748b}
+.nv{font-family:monospace;font-size:11px}
+.nv.g{color:#00d4aa}
+.dc{padding:12px 16px;border-top:1px solid #1a2332;display:flex;flex-direction:column;gap:6px}
+.db{background:#2775ca;color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;width:100%;transition:opacity 0.2s}
+.db:hover{opacity:0.85}
+.db.s{background:transparent;border:1px solid #1a2332;color:#64748b}
+.db.s:hover{border-color:#2775ca;color:#2775ca;opacity:1}
+.es{display:flex;flex-direction:column;align-items:center;justify-content:center;height:200px;color:#64748b;gap:8px}
+@media(max-width:768px){.main{grid-template-columns:1fr;height:auto}.rp{border-top:1px solid #1a2332}}
+</style></head>
+<body>
+<header>
+<div style="display:flex;align-items:center;gap:16px">
+<a href="/" class="back">← Terminal</a>
+<div class="logo"><div class="lm">SS</div><div><div class="lt">ShadowSignal Pay</div><div class="ls">Agentic Economy · Arc Testnet · USDC</div></div></div>
+</div>
+<div class="badge"><div class="dot"></div>LIVE STREAM</div>
+</header>
+<div class="main">
+<div class="sp">
+<div class="ph"><span class="pt">Payment Stream</span><span class="tc" id="txCount">0 transactions</span></div>
+<div class="sl" id="streamList"><div class="es"><div style="font-size:28px">⚡</div><p>Waiting for agent activity…</p><p style="font-size:11px">Click Simulate to demo</p></div></div>
+</div>
+<div class="rp">
+<div class="wc">
+<div class="wl">Agent Wallet · ARC-TESTNET</div>
+<div class="wb"><span>USDC </span><span id="balance">--</span></div>
+<div class="bc" id="balanceChange">▼ 0.000 spent this session</div>
+<div class="wa">0x00f632c14acbf9a9af87d5c1145a94fb7c0ee3c9</div>
+</div>
+<div class="sg">
+<div class="sc2"><div class="sl2">Total Paid</div><div class="sv u" id="totalPaid">0.000</div></div>
+<div class="sc2"><div class="sl2">TX Count</div><div class="sv g" id="totalTx">0</div></div>
+<div class="sc2"><div class="sl2">Avg/Call</div><div class="sv" id="avgCost">—</div></div>
+<div class="sc2"><div class="sl2">Agents</div><div class="sv g" id="activeAgents">0</div></div>
+</div>
+<div class="bd"><div class="bt">Spend by Agent</div><div id="agentBreakdown"><div style="color:#64748b;font-size:12px">No activity yet</div></div></div>
+<div class="ni">
+<div class="nr"><span class="nl">Network</span><span class="nv g">ARC-TESTNET</span></div>
+<div class="nr"><span class="nl">Token</span><span class="nv">USDC (ERC-20)</span></div>
+<div class="nr"><span class="nl">Recipient</span><span class="nv">0x9fcf…ee37</span></div>
+<div class="nr"><span class="nl">Settlement</span><span class="nv g">Real-time</span></div>
+</div>
+<div class="dc">
+<button class="db" onclick="sim()">⚡ Simulate Agent Run</button>
+<button class="db s" onclick="clr()">Clear Stream</button>
+</div>
+</div>
+</div>
+<script>
+const AG=[
+{n:"Investigator",a:"web_scrape",amt:0.005,e:"🔍",c:"#7c3aed"},
+{n:"Analyst",a:"analysis",amt:0.003,e:"📊",c:"#2775ca"},
+{n:"Strategist",a:"strategy",amt:0.003,e:"♟️",c:"#0891b2"},
+{n:"Regulatory",a:"compliance",amt:0.002,e:"⚖️",c:"#059669"},
+{n:"Codeband",a:"report",amt:0.001,e:"📋",c:"#d97706"},
+];
+let txs=[],spent=0,asp={},aset=new Set(),ctr=0,bal=60;
+function rh(){return"0x"+[...Array(8)].map(()=>Math.floor(Math.random()*16).toString(16)).join("")}
+function tn(){return new Date().toLocaleTimeString("en-US",{hour12:false})}
+function addTx(a){
+const tx={id:++ctr,n:a.n,ac:a.a,amt:a.amt,e:a.e,c:a.c,h:rh(),t:tn(),s:"pending"};
+txs.unshift(tx);spent+=tx.amt;asp[a.n]=(asp[a.n]||0)+tx.amt;aset.add(a.n);
+render();stats();setTimeout(()=>{tx.s="confirmed";render()},1500);
+}
+function render(){
+const l=document.getElementById("streamList");
+if(!txs.length){l.innerHTML='<div class="es"><div style="font-size:28px">⚡</div><p>Waiting...</p></div>';return}
+l.innerHTML=txs.slice(0,50).map((tx,i)=>`<div class="tr ${i===0?'new':''}">
+<div class="ai" style="background:${tx.c}22;border:1px solid ${tx.c}44">${tx.e}</div>
+<div><div class="ta">ShadowSignal ${tx.n}</div><div class="tm"><span class="tac">${tx.ac}</span><span class="th">${tx.h}</span></div>
+<span class="ts ${tx.s==='confirmed'?'sc':'sp2'}">${tx.s==='confirmed'?'✓ confirmed':'◌ pending'}</span></div>
+<div class="tr2"><div class="tam">−${tx.amt.toFixed(3)}</div><div class="tt">${tx.t}</div></div>
+</div>`).join("");
+}
+function stats(){
+document.getElementById("txCount").textContent=txs.length+" transaction"+(txs.length!==1?"s":"");
+document.getElementById("totalPaid").textContent=spent.toFixed(3);
+document.getElementById("totalTx").textContent=txs.length;
+document.getElementById("avgCost").textContent=txs.length?(spent/txs.length).toFixed(3):"—";
+document.getElementById("activeAgents").textContent=aset.size;
+document.getElementById("balance").textContent=Math.max(0,bal-spent).toFixed(3);
+document.getElementById("balanceChange").textContent="▼ "+spent.toFixed(3)+" spent this session";
+const mx=Math.max(...Object.values(asp),0.001);
+document.getElementById("agentBreakdown").innerHTML=AG.filter(a=>asp[a.n]).map(a=>`
+<div class="ar"><span style="font-size:14px">${a.e}</span><span style="font-size:12px;flex:1">${a.n}</span>
+<div class="abw"><div class="ab" style="width:${(asp[a.n]||0)/mx*100}%;background:${a.c}"></div></div>
+<span class="at">${(asp[a.n]||0).toFixed(3)}</span></div>`).join("")||'<div style="color:#64748b;font-size:12px">No activity yet</div>';
+}
+async function fetchBal(){
+try{const r=await fetch("/api/pay/balance");const d=await r.json();
+if(d.balance&&d.balance!=="error"&&d.balance!=="N/A"){bal=parseFloat(d.balance);document.getElementById("balance").textContent=parseFloat(d.balance).toFixed(3)}}catch(e){}
+}
+function sim(){const dl=[0,800,1800,2900,4200];AG.forEach((a,i)=>setTimeout(()=>addTx(a),dl[i]))}
+function clr(){txs=[];spent=0;asp={};aset.clear();ctr=0;render();stats()}
+fetchBal();setInterval(fetchBal,30000);
+setTimeout(sim,800);
+</script>
+</body></html>""")
