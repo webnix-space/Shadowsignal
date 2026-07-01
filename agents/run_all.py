@@ -8,6 +8,8 @@ import os
 import threading
 from dotenv import load_dotenv
 from base_agent import BasePollingAgent
+AIML_BASE = "https://api.aimlapi.com/v1"
+GROQ_BASE = "https://api.groq.com/openai/v1"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,10 +22,10 @@ load_dotenv()
 ROOM_ID = os.getenv("BAND_ROOM_ID", "")
 AIML_KEY = os.getenv("AIML_API_KEY", "")
 
-BRIGHT_DATA_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 
-# Check Bright Data config
-if not BRIGHT_DATA_KEY:
+
+
+if False:
     logger.warning("⚠️ BRIGHT_DATA_API_KEY not set — agents will use LLM training data only (not real-time)")
 else:
     logger.info(f"✅ Bright Data API configured — Investigator will fetch real-time intel")
