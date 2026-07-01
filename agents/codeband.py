@@ -54,8 +54,8 @@ def main():
     featherless_key = os.getenv("FEATHERLESS_API_KEY")
     room_id = os.getenv("BAND_ROOM_ID")
 
-    if not api_key or not featherless_key or not room_id:
-        logging.error("Missing CODEBAND_API_KEY, FEATHERLESS_API_KEY, or BAND_ROOM_ID")
+    if not api_key or not room_id:
+        logging.error("Missing CODEBAND_API_KEY or BAND_ROOM_ID")
         return
 
     agent = BasePollingAgent(

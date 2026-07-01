@@ -19,7 +19,7 @@ load_dotenv()
 
 ROOM_ID = os.getenv("BAND_ROOM_ID", "")
 AIML_KEY = os.getenv("AIML_API_KEY", "")
-FEATHERLESS_KEY = os.getenv("FEATHERLESS_API_KEY", "")
+FEATHERLESS_KEY = ""
 BRIGHT_DATA_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 
 # Check Bright Data config
@@ -215,7 +215,7 @@ def main():
         logger.error("Missing AIML_API_KEY")
         return
     if not FEATHERLESS_KEY:
-        logger.error("Missing FEATHERLESS_API_KEY")
+        pass  # FEATHERLESS removed
         return
 
     logger.info("ShadowSignal — Starting all 5 agents in parallel threads")
