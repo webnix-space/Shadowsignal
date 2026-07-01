@@ -7,7 +7,7 @@ import logging
 import os
 import threading
 from dotenv import load_dotenv
-from base_agent import BasePollingAgent, AIML_BASE, FEATHERLESS_BASE
+from base_agent import BasePollingAgent
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +19,7 @@ load_dotenv()
 
 ROOM_ID = os.getenv("BAND_ROOM_ID", "")
 AIML_KEY = os.getenv("AIML_API_KEY", "")
-FEATHERLESS_KEY = ""
+
 BRIGHT_DATA_KEY = os.getenv("BRIGHT_DATA_API_KEY", "")
 
 # Check Bright Data config
@@ -174,17 +174,17 @@ AGENTS = [
         "name": "ShadowSignal Regulatory",
         "key_env": "REGULATORY_API_KEY",
         "prompt": REGULATORY_PROMPT,
-        "llm_key": FEATHERLESS_KEY,
-        "llm_model": "deepseek-ai/DeepSeek-V3.2",
-        "llm_base": FEATHERLESS_BASE,
+        "llm_key": GROQ_KEY,
+        "llm_model": "llama-3.3-70b-versatile",
+        "llm_base": GROQ_BASE,
     },
     {
         "name": "ShadowSignal Codeband",
         "key_env": "CODEBAND_API_KEY",
         "prompt": CODEBAND_PROMPT,
-        "llm_key": FEATHERLESS_KEY,
-        "llm_model": "deepseek-ai/DeepSeek-V3.2",
-        "llm_base": FEATHERLESS_BASE,
+        "llm_key": GROQ_KEY,
+        "llm_model": "llama-3.3-70b-versatile",
+        "llm_base": GROQ_BASE,
     },
 ]
 
