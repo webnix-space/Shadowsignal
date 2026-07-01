@@ -24,12 +24,12 @@ CORS(app)
 
 # ==================== CONFIG ====================
 class Config:
-    BRIGHT_DATA_API_KEY = os.environ.get("BRIGHT_DATA_API_KEY", "").strip()
-    BRIGHT_DATA_ZONE = os.environ.get("BRIGHT_DATA_ZONE", "").strip()
     AIML_API_KEY = os.environ.get("AIML_API_KEY", "").strip()
-    FEATHERLESS_API_KEY = os.environ.get("FEATHERLESS_API_KEY", "").strip()
+    GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "").strip()
     BAND_API_KEY = os.environ.get("BAND_API_KEY", "").strip()
     BAND_ROOM_ID = os.environ.get("BAND_ROOM_ID", "").strip()
+    CIRCLE_API_KEY = os.environ.get("CIRCLE_API_KEY", "").strip()
+    CIRCLE_WALLET_ID = os.environ.get("CIRCLE_WALLET_ID", "c363f82d-2f21-565d-8825-89ca87f79380").strip()
 
 # ==================== HEALTH CHECK ====================
 @app.route("/api/health", methods=["GET"])
@@ -37,12 +37,12 @@ def health_check():
     return jsonify({
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "version": "2.0.3-export-added",
+        "version": "3.0.0-groq-aiml-circle",
         "services": {
-            "bright_data": bool(Config.BRIGHT_DATA_API_KEY and Config.BRIGHT_DATA_ZONE),
             "aiml_api": bool(Config.AIML_API_KEY),
-            "featherless_api": bool(Config.FEATHERLESS_API_KEY),
+            "groq_api": bool(Config.GROQ_API_KEY),
             "band_api": bool(Config.BAND_API_KEY and Config.BAND_ROOM_ID),
+            "circle_pay": bool(Config.CIRCLE_API_KEY),
         }
     })
 
@@ -123,18 +123,10 @@ def search():
         if not query:
             return jsonify({"error": "Query is required"}), 400
 
-        if not Config.BRIGHT_DATA_API_KEY:
-            return jsonify({
-                "success": False,
-                "error": "Bright Data API key not configured",
-                "results": [],
-                "query": query
-            }), 503
-
         try:
             import sys
             sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'agents'))
-            from bright_data import BrightDataClient
+            from free_data import BrightDataClient
 
             bd = BrightDataClient()
             result = bd.search_google(query, num_results=5)
