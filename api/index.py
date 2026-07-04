@@ -911,7 +911,6 @@ btn.disabled=false;
 btn.innerHTML='<span class="btn-icon">&#x25B6;</span><span class="btn-text">EXECUTE INTELLIGENCE GATHERING</span>';
 document.getElementById('last-scan').textContent='LAST SCAN: '+new Date().toISOString().split('T')[1].split('.')[0];
 }
-}
 async _callApi(target){
 try{
 this._setAgentStatus('investigator','processing');
