@@ -13,7 +13,7 @@ import re
 import json
 import requests
 from datetime import datetime
-from band_client import BandClient
+from local_client import LocalClient
 from free_data import BrightDataClient, format_intel_for_llm
 
 logger = logging.getLogger(__name__)
@@ -174,7 +174,7 @@ def extract_mentions(content, participants, self_id="", self_name=""):
 class BasePollingAgent:
     def __init__(self, name, agent_api_key, system_prompt, llm_api_key="", llm_model="", llm_base_url="", room_id=None):
         self.name = name
-        self.client = BandClient(agent_api_key)
+        self.client = LocalClient(name)
         self.system_prompt = system_prompt
         self.llm_api_key = llm_api_key
         self.llm_model = llm_model
