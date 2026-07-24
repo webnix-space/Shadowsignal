@@ -15,7 +15,6 @@ import requests
 from datetime import datetime
 from band_client import BandClient
 from free_data import BrightDataClient, format_intel_for_llm
-from nanopay import fire_nanopayment, get_balance
 
 logger = logging.getLogger(__name__)
 
@@ -291,7 +290,7 @@ class BasePollingAgent:
         except Exception as e:
             logger.warning(f"[{self.name}] Participants fetch failed: {e}")
 
-        logger.info(f"[{self.name}] Balance: {get_balance()} USDC | LLM: Groq→NVIDIA | Data: RSS+DDG")
+        logger.info(f"[{self.name}] LLM: Groq→NVIDIA | Data: RSS+DDG")
 
         while True:
             try:
@@ -350,14 +349,6 @@ class BasePollingAgent:
 
             self.history.append({"role": "user", "content": user_message})
 
-            # NANOPAYMENT
-            action = AGENT_ACTION_MAP.get(self.name, "llm_call")
-            payment = fire_nanopayment(agent_name=self.name, action=action)
-            if payment.get("status") == "success":
-                logger.info(f"[{self.name}] 💸 {payment['amount']} USDC tx={payment['tx_id']}")
-                log_payment_event({"agent": self.name, "action": action, "amount": payment["amount"], "tx_id": payment["tx_id"], "timestamp": datetime.utcnow().isoformat(), "status": "confirmed"})
-            else:
-                logger.warning(f"[{self.name}] Payment skipped: {payment.get('reason')}")
 
             reply = call_llm(messages=self.history, api_key=self.llm_api_key, model=self.llm_model, base_url=self.llm_base_url)
             if not reply:
