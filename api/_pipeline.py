@@ -81,12 +81,14 @@ def _groq_json(system: str, user: str) -> dict:
     if not key:
         raise PipelineError("GROQ_API_KEY is not set on the server.", 503)
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
+    # Groq's JSON mode requires the word "json" in the messages.
+    user = user + "\n\nRespond with a single valid json object and nothing else."
 
     if _cache["models"] is None:
         env = os.environ.get("GROQ_MODEL", "").strip()
         _cache["models"] = ([env] if env else []) + [m for m in DEFAULT_MODELS if m != env]
     queue = list(_cache["models"])
-    tried, discovered, last = set(), False, "no model available"
+    tried, errors, discovered = set(), [], False
 
     while True:
         if not queue:
@@ -99,41 +101,54 @@ def _groq_json(system: str, user: str) -> dict:
             continue
         model = queue.pop(0)
         tried.add(model)
-        payload = {
+        base = {
             "model": model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "temperature": 0.3,
-            "max_tokens": 4096,  # reasoning models spend tokens before the JSON
-            "response_format": {"type": "json_object"},
+            "max_tokens": 4096,  # reasoning models spend tokens before the json
         }
+        strict = dict(base, response_format={"type": "json_object"})
         if model.startswith("openai/gpt-oss"):
-            payload["reasoning_effort"] = "low"
-        for attempt in range(2):
-            try:
-                resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=40)
-                if resp.status_code in (400, 404):  # unknown/retired model or unsupported option
-                    last = "%s: %s" % (model, _api_error(resp))
-                    logger.warning("Groq %s rejected: %s", resp.status_code, last)
-                    break
-                if resp.status_code == 429:
-                    last = "%s: rate limited" % model
-                    time.sleep(1.5 * (attempt + 1))
-                    continue
-                resp.raise_for_status()
-                data = _parse_json(resp.json()["choices"][0]["message"]["content"] or "")
-                # remember the working model first for later calls in this instance
-                _cache["models"] = [model] + [m for m in _cache["models"] if m != model]
-                return data
-            except (requests.RequestException, ValueError, KeyError, TypeError) as e:
-                last = "%s: %s" % (model, e)
-                logger.warning("Groq attempt failed: %s", last)
-                time.sleep(0.8)
-    raise PipelineError("LLM call failed (%s)" % last)
+            strict["reasoning_effort"] = "low"
+        # variant 1: json mode. variant 2: plain request (parsed by us) if json mode is rejected
+        gone = False
+        for variant, payload in (("json-mode", strict), ("plain", base)):
+            for attempt in range(2):
+                try:
+                    resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=40)
+                    if resp.status_code == 404:
+                        errors.append("%s: %s" % (model, _api_error(resp)))
+                        gone = True
+                        break
+                    if resp.status_code == 400:
+                        errors.append("%s[%s]: %s" % (model, variant, _api_error(resp)))
+                        break  # try the next variant
+                    if resp.status_code == 429:
+                        errors.append("%s: rate limited" % model)
+                        time.sleep(1.5 * (attempt + 1))
+                        continue
+                    resp.raise_for_status()
+                    data = _parse_json(resp.json()["choices"][0]["message"]["content"] or "")
+                    _cache["models"] = [model] + [m for m in _cache["models"] if m != model]
+                    return data
+                except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+                    errors.append("%s[%s]: %s" % (model, variant, str(e)[:120]))
+                    time.sleep(0.8)
+            if gone:
+                break
+    logger.warning("All Groq models failed: %s", errors)
+    raise PipelineError("LLM call failed. " + " | ".join(errors[-4:])[:500])
 
 
 def _parse_json(text: str) -> dict:
     text = re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.M).strip()
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+    except ValueError:
+        i, j = text.find("{"), text.rfind("}")  # json wrapped in prose
+        if i == -1 or j <= i:
+            raise
+        data = json.loads(text[i:j + 1])
     if not isinstance(data, dict):
         raise ValueError("expected a JSON object")
     return data
