@@ -23,7 +23,12 @@ from _free_data import get_competitive_intel, format_sources_for_llm
 logger = logging.getLogger(__name__)
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
+GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
+# Free-tier chat models as of Oct 2026. Env GROQ_MODEL (optional) is tried first.
+DEFAULT_MODELS = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+_NON_CHAT = ("whisper", "tts", "guard", "safeguard", "embed", "playai", "orpheus")
+_MODEL_PREF = ("gpt-oss", "llama-3.3", "llama-4", "qwen", "kimi", "llama")
+_cache = {"models": None}
 
 THREATS = ("low", "medium", "high", "critical")
 TRENDS = ("up", "down", "stable")
@@ -51,34 +56,79 @@ class PipelineError(Exception):
         self.status = status
 
 
-def _groq_json(system: str, user: str, retries: int = 2) -> dict:
+def _api_error(resp) -> str:
+    try:
+        return str(resp.json().get("error", {}).get("message", ""))[:200] or resp.text[:200]
+    except ValueError:
+        return resp.text[:200]
+
+
+def _discover_models(headers, exclude) -> list:
+    """Ask Groq which chat models this key can use right now."""
+    try:
+        r = requests.get(GROQ_MODELS_URL, headers=headers, timeout=10)
+        r.raise_for_status()
+        ids = [m["id"] for m in r.json().get("data", []) if m.get("active", True)]
+    except (requests.RequestException, ValueError, KeyError):
+        return []
+    ids = [i for i in ids if i not in exclude and not any(b in i.lower() for b in _NON_CHAT)]
+    ids.sort(key=lambda i: next((n for n, p in enumerate(_MODEL_PREF) if p in i), 99))
+    return ids
+
+
+def _groq_json(system: str, user: str) -> dict:
     key = os.environ.get("GROQ_API_KEY", "").strip()
     if not key:
         raise PipelineError("GROQ_API_KEY is not set on the server.", 503)
-    payload = {
-        "model": GROQ_MODEL,
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-        "temperature": 0.3,
-        "max_tokens": 1200,
-        "response_format": {"type": "json_object"},
-    }
     headers = {"Authorization": "Bearer " + key, "Content-Type": "application/json"}
-    last = None
-    for attempt in range(retries + 1):
-        try:
-            resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=25)
-            if resp.status_code == 429:
-                time.sleep(1.5 * (attempt + 1))
-                last = "rate limited"
-                continue
-            resp.raise_for_status()
-            text = resp.json()["choices"][0]["message"]["content"]
-            return _parse_json(text)
-        except (requests.RequestException, ValueError, KeyError) as e:
-            last = str(e)
-            logger.warning("Groq attempt %d failed: %s", attempt + 1, e)
-            time.sleep(0.8)
-    raise PipelineError("LLM call failed: %s" % last)
+
+    if _cache["models"] is None:
+        env = os.environ.get("GROQ_MODEL", "").strip()
+        _cache["models"] = ([env] if env else []) + [m for m in DEFAULT_MODELS if m != env]
+    queue = list(_cache["models"])
+    tried, discovered, last = set(), False, "no model available"
+
+    while True:
+        if not queue:
+            if discovered:
+                break
+            discovered = True
+            queue = _discover_models(headers, tried)
+            if queue:
+                logger.info("Discovered Groq models: %s", queue[:5])
+            continue
+        model = queue.pop(0)
+        tried.add(model)
+        payload = {
+            "model": model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+            "temperature": 0.3,
+            "max_tokens": 4096,  # reasoning models spend tokens before the JSON
+            "response_format": {"type": "json_object"},
+        }
+        if model.startswith("openai/gpt-oss"):
+            payload["reasoning_effort"] = "low"
+        for attempt in range(2):
+            try:
+                resp = requests.post(GROQ_URL, json=payload, headers=headers, timeout=40)
+                if resp.status_code in (400, 404):  # unknown/retired model or unsupported option
+                    last = "%s: %s" % (model, _api_error(resp))
+                    logger.warning("Groq %s rejected: %s", resp.status_code, last)
+                    break
+                if resp.status_code == 429:
+                    last = "%s: rate limited" % model
+                    time.sleep(1.5 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                data = _parse_json(resp.json()["choices"][0]["message"]["content"] or "")
+                # remember the working model first for later calls in this instance
+                _cache["models"] = [model] + [m for m in _cache["models"] if m != model]
+                return data
+            except (requests.RequestException, ValueError, KeyError, TypeError) as e:
+                last = "%s: %s" % (model, e)
+                logger.warning("Groq attempt failed: %s", last)
+                time.sleep(0.8)
+    raise PipelineError("LLM call failed (%s)" % last)
 
 
 def _parse_json(text: str) -> dict:
