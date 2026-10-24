@@ -7,6 +7,7 @@ import logging
 import os
 import sys
 from datetime import datetime
+from urllib.parse import parse_qs, urlencode
 
 from flask import Flask, jsonify, render_template_string, request
 
@@ -18,6 +19,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [API] %(message)s")
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
+
+
+class VercelPathFix:
+    """Vercel rewrites every request to /api/index and loses the original path.
+    vercel.json passes it back as ?path=..., restore it here."""
+
+    def __init__(self, wsgi):
+        self.wsgi = wsgi
+
+    def __call__(self, environ, start_response):
+        if environ.get("PATH_INFO", "").rstrip("/") == "/api/index":
+            qs = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+            original = qs.pop("path", ["/"])[0] or "/"
+            environ["PATH_INFO"] = original if original.startswith("/") else "/" + original
+            environ["QUERY_STRING"] = urlencode(qs, doseq=True)
+        return self.wsgi(environ, start_response)
+
+
+app.wsgi_app = VercelPathFix(app.wsgi_app)
 
 AGENTS = [
     ("investigator", "Investigator", "Data Gathering"),
