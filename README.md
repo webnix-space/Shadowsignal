@@ -23,7 +23,7 @@ an error instead of inventing output.
 ## Deploy
 
 1. Import the repo into Vercel.
-2. Set one environment variable: `GROQ_API_KEY` (optional: `GROQ_MODEL`, default `llama-3.3-70b-versatile`).
+2. Set one environment variable: `GROQ_API_KEY` (optional: `GROQ_MODEL`; otherwise `openai/gpt-oss-120b` then `openai/gpt-oss-20b`, then auto-discovery).
 3. Deploy. Open `/api/health` to confirm `groq_api: true`.
 
 ## Layout
