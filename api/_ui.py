@@ -649,7 +649,9 @@ headers:{'Content-Type':'application/json'},
 body:JSON.stringify({target:target,mode:this.currentMode})
 });
 if(!response.ok){
-throw new Error('HTTP '+response.status);
+let m='HTTP '+response.status;
+try{const j=await response.json();if(j.error){m+=': '+j.error;}}catch(_e){}
+throw new Error(m);
 }
 const data=await response.json();
 if(data.error){
